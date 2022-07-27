@@ -1,0 +1,22 @@
+exp: test
+dataset: BCV
+root_path: ../data/BraTS2019
+model: unet_3D
+gpu: '10'
+max_iterations: 30000
+batch_size: 2
+deterministic: 1
+base_lr: 0.01
+patch_size: [96,96,96]
+seed: 1337
+labeled_bs: 2
+labeled_num: 8
+ema_decay: 0.99
+consistency_type: mse
+consistency: 0.1
+consistency_rampup: 200.0
+DATASET:
+  data: BCV
+  num_classes: 6
+  train_list: "/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/BCV/train.txt"
+  test_list: "/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/BCV/test.txt"

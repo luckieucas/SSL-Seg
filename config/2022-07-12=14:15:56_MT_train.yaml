@@ -1,0 +1,52 @@
+CAC:
+  iou_bound_high: 0.95
+  iou_bound_low: 0.25
+  stride: 4
+DATASET:
+  BCV:
+    num_classes: 6
+    test_list: ../data/BCV/test.txt
+    testing_data_num: 6
+    train_list: ../data/BCV/train.txt
+    training_data_num: 24
+  FLARE:
+    num_classes: 14
+    test_list: ../data/FLARE22/Flare22_test.txt
+    testing_data_num: 10
+    train_list: ../data/FLARE22/Flare22_train.txt
+    training_data_num: 2038
+  MMWHS:
+    num_classes: 8
+    test_list: ../data/MMWHS/MMWHS_test.txt
+    testing_data_num: 6
+    train_list: ../data/MMWHS/MMWHS_train.txt
+    training_data_num: 14
+  batch_size: 2
+  labeled_bs: 1
+  labeled_num: 4
+  name: BCV
+  patch_size:
+  - 96
+  - 160
+  - 160
+backbone: unet_3D
+base_lr: 0.01
+began_condition_iter: 10000
+began_eval_iter: 2000
+began_semi_iter: 6000
+consistency: 0.1
+consistency_rampup: 200.0
+consistency_type: mse
+continue_training: true
+current_iter_num: 5000
+deterministic: 1
+ema_decay: 0.99
+exp: MT
+gpu: '0'
+max_iterations: 30000
+method: MT
+model1_checkpoint: ../model/C3PS_40_FLARE_condition/unet_3D/model1_iter_25600_dice_0.7497.pth
+model2_checkpoint: ../model/C3PS_40_FLARE_condition/unet_3D/model2_iter_29600_dice_0.7854.pth
+root_path: ../data/dBraTS2019
+seed: 1337
+use_CAC: true
