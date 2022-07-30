@@ -7,16 +7,14 @@ import SimpleITK as sitk
 import numpy as np
 from tqdm import tqdm
 from multiprocessing import Pool
+import yaml
 
 from networks.net_factory_3d import net_factory_3d
 from val_3D import test_single_case,calculate_metric
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str,
-                    default='train_config.yaml', help='model_name')
-
-
-parser = argparse.ArgumentParser()
+                    default='test_config_new.yaml', help='model_name')
 parser.add_argument('--test_list', type=str, 
                     default='../data/BCV/test.txt')
 parser.add_argument('--checkpoint', type=str,
@@ -31,7 +29,9 @@ def test_all_case_condition(net, test_list="full_test.list", num_classes=4,
                         condition=-1, method="regular",
                         cal_metric=True,
                         save_prediction=False,
-                        prediction_save_path='./'):
+                        prediction_save_path='./',
+                        cut_upper=1000,
+                        cut_lower=-1000):
     if os.path.isdir(test_list):
         image_list = glob(test_list+"*.nii.gz")
     else:
@@ -57,7 +57,7 @@ def test_all_case_condition(net, test_list="full_test.list", num_classes=4,
             label = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
         else:
             label = np.zeros_like(image)
-        np.clip(image,-68,200,out=image)
+        np.clip(image,cut_lower,cut_upper,out=image)
         image = (image - image.mean()) / image.std()
 
         prob_map = np.zeros((num_classes,shape[0],shape[1],shape[2]))
@@ -89,25 +89,32 @@ def test_all_case_condition(net, test_list="full_test.list", num_classes=4,
 
     print("Validation end")
     return total_metric / len(image_list)
-def main(args):
-    model = net_factory_3d("unet_3D_condition", in_chns=1, class_num=2)
-    model_state_dict = torch.load(args.checkpoint)
+def main(args, config):
+    model = net_factory_3d("unet_3D_condition", in_chns=1, class_num=2).cuda()
+    model_state_dict = torch.load(config['model_checkpoint'])
     model.load_state_dict(model_state_dict)
-    test_list = args.test_list
+    dataset_name = config['dataset_name']
+    dataset_config = config['DATASET'][dataset_name]
+    cut_upper = dataset_config['cut_upper']
+    cut_lower = dataset_config['cut_lower']
+    test_list = dataset_config['test_list']
     patch_size = (96,160,160)
     model.eval()
     metrics = test_all_case_condition(
                         model,
                         test_list=test_list,
-                        num_classes=6, 
+                        num_classes=8, 
                         patch_size=patch_size,
                         stride_xy=64, 
                         stride_z=64,
-                        condition=1
+                        condition=1,
+                        cut_lower=cut_lower,
+                        cut_upper=cut_upper
                     )
     print(metrics)
 
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    main(args)
+    config = yaml.safe_load(open(args.config, 'r'))
+    main(args, config)

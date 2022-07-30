@@ -25,12 +25,11 @@ from dataset.BCVData import BCVDataset
 from dataset.brats2019 import (BraTS2019, CenterCrop, RandomCrop,
                                    RandomRotFlip, ToTensor,
                                    TwoStreamBatchSampler)
-from dataset.pet import PETDataset
+from dataset.dataset import DatasetSemi
 from networks.net_factory_3d import net_factory_3d
 from utils import losses, metrics, ramps
 from utils.util import kaiming_normal_init_weight
 from val_3D import test_all_case,test_all_case_BCV
-from test import test_model_3d
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
@@ -44,7 +43,7 @@ parser.add_argument('--test_list', type=str,
 parser.add_argument('--exp', type=str,
                     default='MMWHS_Fully_Supervised_SGD', help='experiment_name')
 parser.add_argument('--model', type=str,
-                    default='unet_3D', help='model_name')
+                    default='unet_3D_old', help='model_name')
 parser.add_argument('--max_iterations', type=int,
                     default=30000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=2,
@@ -58,8 +57,8 @@ parser.add_argument('--patch_size', type=list,  default=[96, 160, 160],
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
 parser.add_argument('--labeled_num', type=int, default=4,
                     help='labeled data')
-parser.add_argument('--began_eval_iter', type=int, default=0, help='iteration to began evaluation')
-parser.add_argument('--gpu', default='1', type=str, help='id(s) for CUDA_VISIBLE_DEVICES')
+parser.add_argument('--began_eval_iter', type=int, default=2000, help='iteration to began evaluation')
+parser.add_argument('--gpu', default='0', type=str, help='id(s) for CUDA_VISIBLE_DEVICES')
 
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -70,29 +69,24 @@ def train(args, snapshot_path):
     train_data_path = args.root_path
     batch_size = args.batch_size
     max_iterations = args.max_iterations
-    num_classes = 5
-    args.train_list = "../data/Flare/Flare_train.txt"
-    args.test_list = "../data/Flare/Flare_test.txt"
+    num_classes = 8
+    cut_upper = 1000
+    cut_lower = -1000
+    args.train_list = "../data/MMWHS/MMWHS_train.txt"
+    args.test_list = "../data/MMWHS/MMWHS_test.txt"
     
     model = net_factory_3d(net_type=args.model, in_chns=1, class_num=num_classes)
     model = kaiming_normal_init_weight(model)
-    if args.dataset == "pet":
-        db_train = PETDataset("/data/liupeng/PET/pet_additional/train124.txt",
-                                transforms=transforms.Compose([
-                                RandomRotFlip(),
-                                ToTensor(),
-                            ])
-                             )
-        db_test = PETDataset("/data/liupeng/PET/pet_additional/test14.txt")
-    elif args.dataset == "BCV":
-        db_train = BCVDataset(img_list_file=args.train_list,
-                            patch_size=args.patch_size,
-                            labeled_num=args.labeled_num,
-                            transforms=transforms.Compose([
-                            RandomRotFlip(),
-                            RandomCrop(args.patch_size),
-                            ToTensor(),
-                        ]))
+    if args.dataset == "BCV":
+        db_train = DatasetSemi(img_list_file=args.train_list,
+                               patch_size=args.patch_size,
+                               labeled_num=args.labeled_num, 
+                               cutout=True,
+                               affine_trans=True,
+                               num_class=num_classes,
+                               upper=cut_upper,
+                               lower=cut_lower,
+                               train_supervised=True)
     else:
         db_train = BraTS2019(base_dir=train_data_path,
                             split='train',
@@ -117,11 +111,11 @@ def train(args, snapshot_path):
     ce_loss = CrossEntropyLoss()
     dice_loss = losses.DiceLoss(num_classes)
 
-    wandb.init(
-        project="semi-supervised-segmentation", 
-        name="{}_{}_labeledNum{}".format(args.exp,args.model,args.labeled_num),
-        config=args
-    )
+    experiment_name = f"{args.dataset_name}_{args.method_name}_"\
+                               f"{args.model}_labeled{args.labeled_num}_"\
+                               f"{args.exp}"
+    wandb.init(name=experiment_name, project="semi-supervised-segmentation",
+               config = args)
     wandb.tensorboard.patch(root_logdir=snapshot_path + '/log')
     writer = SummaryWriter(snapshot_path + '/log')
     
@@ -139,7 +133,7 @@ def train(args, snapshot_path):
 
             outputs = model(volume_batch)
             outputs_soft = torch.softmax(outputs, dim=1)
-
+            label_batch = torch.argmax(label_batch, dim=1)
             loss_ce = ce_loss(outputs, label_batch.long())
             loss_dice = dice_loss(outputs_soft, label_batch.unsqueeze(1))
             loss = 0.5 * (loss_dice + loss_ce)
@@ -162,7 +156,7 @@ def train(args, snapshot_path):
                 (iter_num, loss.item(), loss_ce.item(), loss_dice.item()))
             writer.add_scalar('loss/loss', loss, iter_num)
 
-            if iter_num % 20 == 0:
+            if iter_num % 500 == 0:
                 image = volume_batch[0, 0:1, :, :, 20:61:10].permute(
                     3, 0, 1, 2).repeat(1, 3, 1, 1)
                 grid_image = make_grid(image, 5, normalize=True)
@@ -238,10 +232,18 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
+    args.dataset_name = "MMWHS"
+    args.method_name = "Baseline"
 
-    snapshot_path = "../model/fully_supervised_{}_labeledNum{}/{}".format(args.exp, args.labeled_num, args.model)
+    snapshot_path = "../model/{}_{}_{}_{}/{}".format(
+        args.dataset_name, 
+        args.labeled_num, 
+        args.method_name, 
+        args.exp,
+        args.model   
+    )
     if not os.path.exists(snapshot_path):
-        os.makedirs(snapshot_path)
+        os.makedirs(snapshot_path)    
 
     logging.basicConfig(filename=snapshot_path+"/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')

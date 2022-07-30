@@ -15,8 +15,10 @@ from torch.utils.data import DataLoader as dataloader
 import numpy as np 
 from glob import glob
 import SimpleITK as sitk
-from .data_augmentation import rotation, affine_transformation, random_cutout
-
+try:
+    from .data_augmentation import rotation, affine_transformation, random_cutout
+except:
+    from data_augmentation import rotation, affine_transformation, random_cutout
 #from .sampler import BatchSampler, ClassRandomSampler
 #from data_augmentation import rotation, affine_transformation, random_cutout
 #from sampler import BatchSampler, ClassRandomSampler #for test
@@ -121,7 +123,7 @@ class Dataset(dataset):
 class DatasetSemi(dataset):
     def __init__(self, img_list_file, patch_size=(48, 224, 224),
                 cutout=False, affine_trans=False, 
-                num_class=2, edge_prob=0., upper=1000, lower=-1000,
+                num_class=2, edge_prob=0.1, upper=1000, lower=-1000,
                 labeled_num=4, train_supervised=False):
         self.patch_size = patch_size
         self.cutout = cutout
@@ -304,8 +306,12 @@ if __name__ == '__main__':
     #     print("step:{}, img_array shape:{}, mask array shape:{}".format(i, img_array.shape, mask_array.shape))
     
     #test generic dataset
-    img_list_file = "/media/gdp/data/liupeng/3D_U-net/datasets/train.txt"
-    test_dataset = DatasetSemi(img_list_file,num_class=6,cutout=True,affine_trans=True)
+    img_list_file = "/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/MMWHS/MMWHS_train.txt"
+    test_dataset = DatasetSemi(
+        img_list_file,num_class=8,cutout=True,affine_trans=True)
+    for data_batch in test_dataset:
+        image, label = data_batch['image'], data_batch['label']
+        print(image.shape, label.shape)
     #test_dataloader = dataloader(test_dataset,batch_size=2,shuffle=True)
     # dataloader with sampler
     # test_dataloader = dataloader(test_dataset, batch_sampler = BatchSampler(ClassRandomSampler(test_dataset), 2, True), num_workers=2, pin_memory=True)

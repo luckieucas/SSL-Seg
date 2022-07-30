@@ -26,7 +26,7 @@ from networks.net_factory_3d import net_factory_3d
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str,
-                    default='train_config.yaml', help='training configuration')
+                    default='test_config_new.yaml', help='training configuration')
 
 
 task_name_id_dict={"full":0,"spleen":1,"kidney":2,"liver":4,"pancreas":5}
@@ -178,14 +178,14 @@ if __name__ == '__main__':
         print(f"-----test epoch:{epoch}------")
         #model_path= f"/data/liupeng/semi-supervised_segmentation/3D_U-net/models/train_multi_organ_all_data_baseline_0601/epoch_{epoch}.pth"
         #model_path = "../model/BCV_4_C3PS_test/unet_3D/model1_iter_8800_dice_0.5924.pth"
-        model_path = "/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/model/C3PS_effectofsemi_finetune_2_MMWHS_condition/unet_3D/model1_iter_23400_dice_0.7574.pth"
+        model_path = "/data/liupeng/semi-supervised_segmentation/3D_U-net_baseline/models/train_MMWHS_all_data_baseline_sgd/best_iter1600_dice0.6124.pth"
         model_path = model_path
         save_path,_ = os.path.split(model_path)
         prediction_save_path = "{}/Prediction/".format(save_path)
         if os.path.exists(prediction_save_path):
             shutil.rmtree(prediction_save_path)
         os.makedirs(prediction_save_path)
-        model = net_factory_3d(net_type='unet_3D_old',in_chns=1, 
+        model = net_factory_3d(net_type='unet_3D',in_chns=1, 
                                       class_num=dataset_config['num_classes'],
                                       model_config=config['model'])
         model.load_state_dict(torch.load(model_path, map_location="cuda:0"))

@@ -1,22 +1,23 @@
-exp: "adam"
-method: C3PS # use which semi-supervised method [Baseline,MT,EM,C3PS,DAN,CPS,UAMT]
+exp: "SGD_noFP16_lr001"
+method: Baseline # use which semi-supervised method [Baseline,MT,EM,C3PS,DAN,CPS,UAMT]
 backbone: unet_3D_old # backbone model
 dataset_name: MMWHS
 gpu: '0'
 root_path: '../data/dBraTS2019'
-continue_training: True
-model_checkpoint: "../model/C3PS_effectofsemi_finetune_2_MMWHS_condition/unet_3D/model1_iter_28600_dice_0.7574.pth"
+continue_training: False
+FP16: False
+model_checkpoint: "../model/MMWHS_2_C3PS_SGD_noFP16_semi/unet_3D_old/model_iter_5400_dice_0.7647.pth"
 model2_checkpoint: "../model/C3PS_effectofsemi_finetune_2_MMWHS_condition/unet_3D/model2_iter_25000_dice_0.7672.pth"
 current_iter_num: 0
 began_semi_iter: 4000  #8000 #2000
-began_condition_iter: 6000 #4000
-began_eval_iter: 200 # 300
+began_condition_iter: 0 #4000
+began_eval_iter: 2000 # 300
 val_freq: 200 #200
 max_iterations: 20000
 use_CAC: True   # whether use Context-Aware-Consistency
 deterministic: 1
-initial_lr: 0.001
-optimizer_type: 'Adam' # ['SGD' or 'Adam']
+initial_lr: 0.01
+optimizer_type: 'SGD' # ['SGD' or 'Adam']
 seed: 1337
 ema_decay: 0.99
 consistency_type: mse
@@ -47,7 +48,7 @@ DATASET:
   labeled_bs: 1
   batch_size: 2
   patch_size: [96,160,160]
-  cutout: True # do random cutout
+  cutout: False # do random cutout
   affine_trans: True  # do affine transformation
   edge_prob: 0.1 # prob to learn edge slice
   MMWHS: # config for MMWHS dataset
