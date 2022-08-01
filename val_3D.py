@@ -167,8 +167,14 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
             label = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
         else:
             label = np.zeros_like(image)
-        np.clip(image,cut_lower,cut_upper,out=image)
-        image = (image - image.mean()) / image.std()
+        if "heartMR" in image_path:
+            min_val_1p=np.percentile(image,1)
+            max_val_99p=np.percentile(image,99)
+            # min-max norm on total 3D volume
+            image=(image-min_val_1p)/(max_val_99p-min_val_1p)
+        else:
+            np.clip(image,cut_lower,cut_upper,out=image)
+            image = (image - image.mean()) / image.std()
         if do_condition:
             print(f"===>test image:{image_path}")
             for condition in condition_list:

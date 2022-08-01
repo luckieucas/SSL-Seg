@@ -150,7 +150,7 @@ class BCVDataset(dataset):
 
 class BCVDatasetCAC(dataset):
     def __init__(self, img_list_file, labeled_num=None, patch_size=(48, 224, 224),
-                cutout=False, affine_trans=False, 
+                cutout=False, affine_trans=False, random_rotflip=False,
                 num_class=2, edge_prob=0., upper=200, lower=-68, 
                 stride=8, iou_bound=[0.25,0.95]):
         self.patch_size = patch_size

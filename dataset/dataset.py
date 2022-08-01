@@ -31,11 +31,12 @@ task_name_id_dict={"full":0,"spleen":1,"kidney":2,"liver":4,"pancreas":5}
 
 class Dataset(dataset):
     def __init__(self, img_list_file, patch_size=(48, 256, 256),
-                cutout=False, affine_trans=False, 
+                cutout=False, affine_trans=False, random_rotflip=False,
                 num_class=2, edge_prob=0., upper=1000, lower=-1000):
         self.patch_size = patch_size
         self.cutout = cutout
         self.affine_trans = affine_trans
+        self.random_rotflip = random_rotflip
         self.num_class = num_class
         self.edge_prob = edge_prob
         self.upper = upper
@@ -122,12 +123,13 @@ class Dataset(dataset):
 
 class DatasetSemi(dataset):
     def __init__(self, img_list_file, patch_size=(48, 224, 224),
-                cutout=False, affine_trans=False, 
+                cutout=False, affine_trans=False, random_rotflip=False,
                 num_class=2, edge_prob=0.1, upper=1000, lower=-1000,
                 labeled_num=4, train_supervised=False):
         self.patch_size = patch_size
         self.cutout = cutout
         self.affine_trans = affine_trans
+        self.random_rotflip = random_rotflip
         self.num_class = num_class
         self.edge_prob = edge_prob
         self.upper = upper
@@ -185,14 +187,21 @@ class DatasetSemi(dataset):
             img_array = img_array_extend
             mask_array = mask_array_extend
         #print("mask array shape:", mask_array.shape)
-  
+          # do random flip
+        if self.random_rotflip:
+            k = np.random.randint(0, 4)
+            image = np.rot90(img_array, k)
+            label = np.rot90(mask_array, k)
+            axis = np.random.randint(0, 2)
+            img_array = np.flip(image, axis=axis).copy()
+            mask_array = np.flip(label, axis=axis).copy()
         # 将灰度值在阈值之外的截断掉
-        upper = self.upper
-        lower = self.lower
-        img_array[img_array > upper] = upper
-        img_array[img_array < lower] = lower
         """Normalize the image"""
-        img_array = (img_array - img_array.mean())/img_array.std()
+        if "heartMR" in img_name:
+            img_array = self.normalize_minmax_data(img_array)
+        else:
+            np.clip(img_array,self.lower, self.upper, out=img_array)
+            img_array = (img_array - img_array.mean())/img_array.std()
         img_shape = img_array.shape
         
         """get image patch"""
@@ -224,6 +233,7 @@ class DatasetSemi(dataset):
         mask_array = gt_onehot
         #mask_array = torch.FloatTensor(mask_array).unsqueeze(0)
         # do transformation
+
         
         if self.affine_trans:
             angle_x = random.uniform(-0.08,0.08)
@@ -253,7 +263,24 @@ class DatasetSemi(dataset):
     def __len__(self):
         return len(self.img_list)
 
-
+    def normalize_minmax_data(self, image_data, min_val=1,max_val=99):
+        """
+        # 3D MRI scan is normalized to range between 0 and 1 using min-max normalization.
+        Here, the minimum and maximum values are used as 1st and 99th percentiles respectively from the 3D MRI scan.
+        We expect the outliers to be away from the range of [0,1].
+        input params :
+            image_data : 3D MRI scan to be normalized using min-max normalization
+            min_val : minimum value percentile
+            max_val : maximum value percentile
+        returns:
+            final_image_data : Normalized 3D MRI scan obtained via min-max normalization.
+        """
+        min_val_1p=np.percentile(image_data,min_val)
+        max_val_99p=np.percentile(image_data,max_val)
+        final_image_data=np.zeros((image_data.shape[0],image_data.shape[1],image_data.shape[2]), dtype=np.float64)
+        # min-max norm on total 3D volume
+        final_image_data=(image_data-min_val_1p)/(max_val_99p-min_val_1p)
+        return final_image_data
 
 def get_train_loaders(config):
     """
@@ -308,7 +335,7 @@ if __name__ == '__main__':
     #test generic dataset
     img_list_file = "/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/MMWHS/MMWHS_train.txt"
     test_dataset = DatasetSemi(
-        img_list_file,num_class=8,cutout=True,affine_trans=True)
+        img_list_file,num_class=8,cutout=True,affine_trans=True, random_rotflip=True)
     for data_batch in test_dataset:
         image, label = data_batch['image'], data_batch['label']
         print(image.shape, label.shape)

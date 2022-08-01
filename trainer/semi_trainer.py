@@ -73,6 +73,7 @@ class SemiSupervisedTrainer:
         self.labeled_bs = dataset['labeled_bs']
         self.cutout = dataset['cutout']
         self.affine_trans = dataset['affine_trans']
+        self.random_rotflip = dataset['random_rotflip']
         self.edge_prob = dataset['edge_prob']
         self.dataset_name = config['dataset_name']
         
@@ -184,6 +185,7 @@ class SemiSupervisedTrainer:
         self.dataset = DatasetSemi(img_list_file=self.train_list, 
                                         cutout=self.cutout,
                                         affine_trans=self.affine_trans, 
+                                        random_rotflip=self.random_rotflip,
                                         patch_size=self.patch_size, 
                                         num_class=self.num_classes, 
                                         edge_prob=self.edge_prob,
@@ -388,7 +390,7 @@ class SemiSupervisedTrainer:
                     self.current_iter, lr_, dice_loss.item(),ce_loss.item())
                 )
                 if ((self.current_iter>1000 and self.current_iter % 200 == 0) or 
-                    (self.current_iter<1000 and self.current_iter % 400==0)
+                    (self.current_iter<1000 and self.current_iter % 400 == 0)
                 ):
                     self.network.eval()
                     avg_metric = test_all_case_BCV(
@@ -1773,7 +1775,7 @@ class SemiSupervisedTrainer:
                                                       self.current_iter)
                 if (self.current_iter > self.began_eval_iter and
                     self.current_iter % self.val_freq == 0):
-                    self.evaluation()
+                    self.evaluation(model=self.network)
                 if self.current_iter % self.save_checkpoint_freq == 0:
                     self._save_checkpoint()
                 if self.current_iter >= self.max_iterations:

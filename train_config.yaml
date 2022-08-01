@@ -1,4 +1,4 @@
-exp: "SGD_noFP16_lr001"
+exp: "randomflip"
 method: Baseline # use which semi-supervised method [Baseline,MT,EM,C3PS,DAN,CPS,UAMT]
 backbone: unet_3D_old # backbone model
 dataset_name: MMWHS
@@ -9,8 +9,8 @@ FP16: False
 model_checkpoint: "../model/MMWHS_2_C3PS_SGD_noFP16_semi/unet_3D_old/model_iter_5400_dice_0.7647.pth"
 model2_checkpoint: "../model/C3PS_effectofsemi_finetune_2_MMWHS_condition/unet_3D/model2_iter_25000_dice_0.7672.pth"
 current_iter_num: 0
-began_semi_iter: 4000  #8000 #2000
-began_condition_iter: 0 #4000
+began_semi_iter: 2000  #8000 #2000
+began_condition_iter: 8000 #4000
 began_eval_iter: 2000 # 300
 val_freq: 200 #200
 max_iterations: 20000
@@ -49,12 +49,21 @@ DATASET:
   batch_size: 2
   patch_size: [96,160,160]
   cutout: False # do random cutout
-  affine_trans: True  # do affine transformation
+  affine_trans: False  # do affine transformation
+  random_rotflip: True # do random rotation and flip
   edge_prob: 0.1 # prob to learn edge slice
   MMWHS: # config for MMWHS dataset
     num_classes: 8
     train_list: "../data/MMWHS/MMWHS_train.txt"
     test_list: "../data/MMWHS/MMWHS_test.txt"
+    training_data_num: 14
+    testing_data_num: 6
+    cut_upper: 1000
+    cut_lower: -1000
+  MMWHS_MR: # config for MMWHS dataset
+    num_classes: 8
+    train_list: "../data/MMWHS_MR/train.txt"
+    test_list: "../data/MMWHS_MR/test.txt"
     training_data_num: 14
     testing_data_num: 6
     cut_upper: 1000
