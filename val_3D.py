@@ -1,10 +1,8 @@
 import os
 import math
 from glob import glob
-from cv2 import dft
 
 import h5py
-import nibabel as nib
 import numpy as np
 import SimpleITK as sitk
 import torch
@@ -19,6 +17,7 @@ def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1,
     w, h, d = image.shape
 
     # if the size of image is less than patch_size, then padding it
+    device = next(net.parameters()).device
     add_pad = False
     if w < patch_size[0]:
         w_pad = patch_size[0]-w
@@ -63,24 +62,23 @@ def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1,
                                    ys:ys+patch_size[1], zs:zs+patch_size[2]]
                 test_patch = np.expand_dims(np.expand_dims(
                     test_patch, axis=0), axis=0).astype(np.float32)
-                test_patch = torch.from_numpy(test_patch).cuda()
+                test_patch = torch.from_numpy(test_patch).to(device)
                 
 
                 with torch.no_grad():
                     if condition>0:
-                        condition = torch.tensor([condition],dtype=torch.long, device="cuda")
-                        y1 = net(test_patch, condition)
+                        condition = torch.tensor([condition],dtype=torch.long, device=device)
+                        pred1 = net(test_patch, condition)
                     else:
-                        if method=='urpc':
-                            y1, _, _, _ = net(test_patch)
-                        else:
-                            y1 = net(test_patch)
+                        pred1 = net(test_patch)
+                        if len(pred1)>0 and isinstance(pred1, (tuple, list)):
+                            pred1 = pred1[0]
                     # ensemble
-                    y = torch.softmax(y1, dim=1)
-                y = y.cpu().data.numpy()
-                y = y[0, :, :, :, :]
+                    pred = torch.softmax(pred1, dim=1)
+                pred = pred.cpu().data.numpy()
+                pred = pred[0, :, :, :, :]
                 score_map[:, xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] \
-                    = score_map[:, xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] + y
+                    = score_map[:, xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] + pred
                 cnt[xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] \
                     = cnt[xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] + 1
     score_map = score_map/np.expand_dims(cnt, axis=0)
@@ -137,7 +135,9 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
                         prediction_save_path='./',
                         test_num=2,
                         cut_upper=200,
-                        cut_lower=-68):
+                        cut_lower=-68,
+                        con_list=None,
+                        normalization='Zscore'):
     if os.path.isdir(test_list):
         image_list = glob(test_list+"*.nii.gz")
     else:
@@ -146,7 +146,10 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
     print("Total test images:",len(image_list))
     total_metric = np.zeros((num_classes-1, 2))
     print("Validation begin")
-    condition_list = [i for i in range(1,num_classes)]
+    if con_list:
+        condition_list = con_list # for condition learning
+    else:
+        condition_list = [i for i in range(1,num_classes)]
     #shuffle(condition_list)
     shuffle(image_list)
     if not do_condition:
@@ -167,11 +170,13 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
             label = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
         else:
             label = np.zeros_like(image)
-        if "heartMR" in image_path:
+        if "heartMR" in image_path or normalization=='MinMax':
             min_val_1p=np.percentile(image,1)
             max_val_99p=np.percentile(image,99)
             # min-max norm on total 3D volume
+            print('min max norm')
             image=(image-min_val_1p)/(max_val_99p-min_val_1p)
+            np.clip(image, 0.0, 1.0, out=image)
         else:
             np.clip(image,cut_lower,cut_upper,out=image)
             image = (image - image.mean()) / image.std()
@@ -202,6 +207,9 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
             sitk.WriteImage(pred_itk, prediction_save_path+image_name.replace(".nii.gz","_pred.nii.gz"))
 
     print("Validation end")
-    return total_metric / test_num
+    if con_list:
+        return total_metric[[con-1 for con in con_list]] / test_num
+    else:
+        return total_metric / test_num
 
 

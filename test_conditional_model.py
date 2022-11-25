@@ -1,4 +1,4 @@
-"test conditional model"
+"test for conditional model"
 import os 
 import argparse
 import torch
@@ -8,6 +8,7 @@ import numpy as np
 from tqdm import tqdm
 from multiprocessing import Pool
 import yaml
+import shutil
 
 from networks.net_factory_3d import net_factory_3d
 from val_3D import test_single_case,calculate_metric
@@ -15,11 +16,16 @@ from val_3D import test_single_case,calculate_metric
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str,
                     default='test_config_new.yaml', help='model_name')
-parser.add_argument('--test_list', type=str, 
-                    default='../data/BCV/test.txt')
-parser.add_argument('--checkpoint', type=str,
+parser.add_argument('--gpu', type=str, default='0',help='gpu id for testing')
+parser.add_argument('--model_path', type=str,
                     default='../model/BCV_4_C3PS_test/unet_3D/'\
                             'model2_iter_15800_dice_0.7323.pth')
+
+class_id_name_dict = {
+    'MMWHS':['MYO', 'LA', 'LV', 'RA', 'AA', 'PA', 'RV'],
+    'BCV':['Spleen', 'Right Kidney', 'Left Kidney','Liver','Pancreas'],
+    'LA':['LA']
+}
 
 def predict_multiprocess():
     pass
@@ -31,16 +37,20 @@ def test_all_case_condition(net, test_list="full_test.list", num_classes=4,
                         save_prediction=False,
                         prediction_save_path='./',
                         cut_upper=1000,
-                        cut_lower=-1000):
+                        cut_lower=-1000,
+                        con_list=None):
     if os.path.isdir(test_list):
         image_list = glob(test_list+"*.nii.gz")
     else:
         with open(test_list, 'r') as f:
             image_list = [img.replace('\n','') for img in f.readlines()]
     print("Total test images:",len(image_list))
-    total_metric = np.zeros((num_classes-1, 2))
     print("Validation begin")
-    condition_list = [i for i in range(1,num_classes)]
+    if con_list:
+        condition_list = con_list 
+    else:
+        condition_list = [i for i in range(1,num_classes)]
+    total_metric = np.zeros((len(condition_list), 2))
     for i, image_path in enumerate(tqdm(image_list)):
         print(f"===========>processing {image_path}")
         if len(image_path.strip().split()) > 1:
@@ -61,7 +71,7 @@ def test_all_case_condition(net, test_list="full_test.list", num_classes=4,
         image = (image - image.mean()) / image.std()
 
         prob_map = np.zeros((num_classes,shape[0],shape[1],shape[2]))
-        for con_index in condition_list:
+        for i, con_index in enumerate(condition_list):
             pred_con, prob = test_single_case(net, image, stride_xy, stride_z, 
                                                patch_size, 
                                                num_classes=num_classes, 
@@ -69,15 +79,15 @@ def test_all_case_condition(net, test_list="full_test.list", num_classes=4,
                                                method=method,
                                                return_scoremap=True)
             prob_map[0,:] += prob[0]
-            prob_map[con_index,:] = prob[1]
+            prob_map[i,:] = prob[1]
             metric = calculate_metric(label == con_index, pred_con)
             print(f"con:{con_index}, metric:{metric}")
         prob_map[0] /= len(condition_list)
         prediction = np.argmax(prob_map,0)
         if cal_metric:
-            for i in range(1, num_classes):
-                total_metric[i-1, :] += calculate_metric(label == i, 
-                                                         prediction == i)
+            for i,con_index in enumerate(condition_list):
+                total_metric[i, :] += calculate_metric(label == con_index, 
+                                                         prediction == con_index)
         
         # save prediction
         if save_prediction: 
@@ -100,21 +110,48 @@ def main(args, config):
     test_list = dataset_config['test_list']
     patch_size = (96,160,160)
     model.eval()
-    metrics = test_all_case_condition(
-                        model,
-                        test_list=test_list,
-                        num_classes=8, 
-                        patch_size=patch_size,
-                        stride_xy=64, 
-                        stride_z=64,
-                        condition=1,
-                        cut_lower=cut_lower,
-                        cut_upper=cut_upper
-                    )
-    print(metrics)
 
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    config = yaml.safe_load(open(args.config, 'r'))
-    main(args, config)
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+    model_path = args.model_path
+    root_path,_ = os.path.split(model_path)
+    config_file_list = glob(root_path+"/*yaml")
+    sorted(config_file_list)
+    config_file = config_file_list[-1]
+    print(f"===========> using config file: {os.path.split(config_file)[1]}")
+    config = yaml.safe_load(open(config_file, 'r'))
+    method_name = config['method']
+
+    dataset_name = config['dataset_name']
+    class_name_list = class_id_name_dict[dataset_name]
+    dataset_config = config['DATASET'][dataset_name]
+    cut_upper = dataset_config['cut_upper']
+    cut_lower = dataset_config['cut_lower']
+    num_classes = dataset_config['num_classes']
+    
+    pred_save_path = f"{root_path}/Prediction_con/"
+    if os.path.exists(pred_save_path):
+        shutil.rmtree(pred_save_path)
+    os.makedirs(pred_save_path)
+    model = net_factory_3d("unet_3D_condtion_encoder", in_chns=1, class_num=2).cuda()
+    model.load_state_dict(torch.load(model_path, map_location="cuda:0"))
+    test_list = dataset_config['test_list']
+    patch_size = config['DATASET']['patch_size']
+    model = model.cuda()
+    model.eval()
+    metrics = test_all_case_condition(
+        model,
+        test_list=test_list,
+        num_classes=num_classes, 
+        patch_size=patch_size,
+        stride_xy=64, 
+        stride_z=64,
+        condition=1,
+        cut_lower=cut_lower,
+        cut_upper=cut_upper,
+        con_list = [1,2,3,4,5],
+        save_prediction=True,
+        prediction_save_path=pred_save_path
+)

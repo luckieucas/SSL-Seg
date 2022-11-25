@@ -13,11 +13,16 @@ from torch.utils.data import Dataset as dataset
 import numpy as np  
 import SimpleITK as sitk
 from tqdm import tqdm
+from collections import Counter
 
 try:
-    from data_augmentation import rotation, affine_transformation, random_cutout
+    from data_augmentation import (
+        rotation, affine_transformation, random_cutout, random_rotate_flip
+    )
 except:
-    from dataset.data_augmentation import rotation, affine_transformation, random_cutout
+    from dataset.data_augmentation import (
+        rotation, affine_transformation, random_cutout, random_rotate_flip
+    )
 
 class BCVDataset(dataset):
     def __init__(self, img_list_file, patch_size, labeled_num, 
@@ -150,12 +155,15 @@ class BCVDataset(dataset):
 
 class BCVDatasetCAC(dataset):
     def __init__(self, img_list_file, labeled_num=None, patch_size=(48, 224, 224),
-                cutout=False, affine_trans=False, random_rotflip=False,
+                cutout=False, rotate_trans=False, scale_trans=False,
+                random_rotflip=False,
                 num_class=2, edge_prob=0., upper=200, lower=-68, 
-                stride=8, iou_bound=[0.25,0.95]):
+                stride=8, iou_bound=[0.25,0.95], con_list=None, weights=None):
         self.patch_size = patch_size
         self.cutout = cutout
-        self.affine_trans = affine_trans
+        self.rotate_trans = rotate_trans
+        self.scale_trans = scale_trans
+        self.random_rotflip = random_rotflip
         self.num_class = num_class
         self.edge_prob = edge_prob
         self.upper = upper
@@ -163,11 +171,20 @@ class BCVDatasetCAC(dataset):
         self.stride = stride
         self.iou_bound = iou_bound
         self.labeled_num = labeled_num
+        if con_list:
+            self.con_list = con_list 
+        else:
+            self.con_list = range(1, self.num_class)
+        if weights:
+            self.weights = [weights[i-1] for i in self.con_list ]
+        else:
+            self.weights = [1]*len(self.con_list)
         with open(img_list_file, 'r') as f:
             self.img_list = [img.replace("\n","") for img in f.readlines()]
         print(f"total img:{len(self.img_list)}")
         print(f"lower:{self.lower},upper:{self.upper}")
-        print(f"do affine:{self.affine_trans}, do cutout:{self.cutout}")
+        print(f"do affine:{self.rotate_trans}, do cutout:{self.cutout}")
+        print(f"condition list:{self.con_list}")
 
     def __getitem__(self, index):
         if len(self.img_list[index].strip().split()) > 1:
@@ -180,9 +197,6 @@ class BCVDatasetCAC(dataset):
 
         """get task name"""
         _,img_name = os.path.split(img_path)
-        task_name = "full"
-        if len(img_name.split("_")) >1:
-            task_name = img_name.split("_")[0]
         """read image and mask"""
         image = sitk.ReadImage(img_path)
         img_array = sitk.GetArrayFromImage(image)
@@ -192,7 +206,12 @@ class BCVDatasetCAC(dataset):
         else:
             mask_array = np.zeros_like(img_array)
         mask_array = mask_array.astype(np.uint8)
-        #print(f"unlabeled data:{img_name},mask unique:{np.unique(mask_array)}")
+        
+        """ do random rotate and flip"""
+        if self.random_rotflip:
+            img_array, mask_array = random_rotate_flip(img_array, mask_array)
+            
+        """ padding image """
         img_shape = img_array.shape
         if img_shape[0]< self.patch_size[0]:
             #need to extend data
@@ -203,13 +222,14 @@ class BCVDatasetCAC(dataset):
             mask_array_extend[gap//2:gap//2+img_shape[0],:,:] = mask_array
             img_array = img_array_extend
             mask_array = mask_array_extend
+        
         if img_shape[1]< self.patch_size[1]:
                 #need to extend data
             gap = self.patch_size[1]-img_shape[1]
             img_array_extend = np.zeros(( img_shape[0], self.patch_size[1],img_shape[2]))
             mask_array_extend = np.zeros(( img_shape[0], self.patch_size[1], img_shape[2]))
-            img_array_extend[:,gap//2:gap//2+img_shape[0],:] = img_array
-            mask_array_extend[:,gap//2:gap//2+img_shape[0],:] = mask_array
+            img_array_extend[:,gap//2:gap//2+img_shape[1],:] = img_array
+            mask_array_extend[:,gap//2:gap//2+img_shape[1],:] = mask_array
             img_array = img_array_extend
             mask_array = mask_array_extend
         if img_shape[2]< self.patch_size[2]:
@@ -217,8 +237,8 @@ class BCVDatasetCAC(dataset):
             gap = self.patch_size[2]-img_shape[2]
             img_array_extend = np.zeros(( img_shape[0],img_shape[1], self.patch_size[2]))
             mask_array_extend = np.zeros(( img_shape[0], img_shape[1], self.patch_size[2]))
-            img_array_extend[:,:,gap//2:gap//2+img_shape[0]] = img_array
-            mask_array_extend[:,:,gap//2:gap//2+img_shape[0]] = mask_array
+            img_array_extend[:,:,gap//2:gap//2+img_shape[2]] = img_array
+            mask_array_extend[:,:,gap//2:gap//2+img_shape[2]] = mask_array
             img_array = img_array_extend
             mask_array = mask_array_extend
         # 将灰度值在阈值之外的截断掉
@@ -227,6 +247,7 @@ class BCVDatasetCAC(dataset):
         img_array = (img_array - img_array.mean())/img_array.std()
         shape = img_array.shape
         
+        
         """ get one hot of mask"""
         mask_array = torch.FloatTensor(mask_array).unsqueeze(0)
         gt_onehot = torch.zeros((self.num_class, mask_array.shape[1], mask_array.shape[2],mask_array.shape[3]))
@@ -234,12 +255,7 @@ class BCVDatasetCAC(dataset):
         mask_array = gt_onehot     
         
         """get image patch"""
-        data = []
-        seg = []
-        ul1 = []
-        br1 = []
-        ul2 = [] 
-        br2 = []
+        ul1 = br1 = ul2 = br2 =  []
         lb_x = 0
         ub_x = shape[0]  - self.patch_size[0]
         lb_y = 0
@@ -295,14 +311,6 @@ class BCVDatasetCAC(dataset):
             assert (overlap1_br[0]-overlap1_ul[0]) * (overlap1_br[1]-overlap1_ul[1]) * (overlap1_br[2]-overlap1_ul[2]) == (overlap2_br[0]-overlap2_ul[0]) * (overlap2_br[1]-overlap2_ul[1]) * (overlap2_br[2]-overlap2_ul[2])
         except:
             print("x: {}, y: {}, z: {}".format(shape[0], shape[1], shape[2]))
-            # print("image.shape: ", image.shape)
-            # print("x1: {}, x2: {}, y1: {}, y2: {}".format(x1, x2, y1, y2))
-            # print("image_path:", image_path)
-            # print("ul1: ", overlap1_ul)
-            # print("br1: ", overlap1_br)
-            # print("ul2: ", overlap2_ul)
-            # print("br2: ", overlap2_br)
-            # print("index: ", index)
             exit()
         bbox_x_ub2 = bbox_x_lb2 + self.patch_size[0]
         bbox_y_ub2 = bbox_y_lb2 + self.patch_size[1]
@@ -340,18 +348,29 @@ class BCVDatasetCAC(dataset):
         
         mask_array1 = np.argmax(mask_array1, axis=1)
         mask_array2 = np.argmax(mask_array2, axis=1)
-        if self.cutout:
+        if self.cutout and index< self.labeled_num:
             mask_array1 = random_cutout(mask_array1[0], size=(4,4,4))
             mask_array2 = random_cutout(mask_array2[0], size=(4,4,4))
-        
+        else:
+            mask_array1 = mask_array1[0]
+            mask_array2 = mask_array2[0]
+            
         """ do affine transformation"""
-        if self.affine_trans and index < self.labeled_num:
-            angle_x = random.uniform(-0.08,0.08)
-            angle_y = random.uniform(-0.08,0.08)
-            angle_z = random.uniform(-0.08,0.08)
-            scale_x = random.uniform(0.8,1.2)
-            scale_y = random.uniform(0.8,1.2)
-            scale_z = random.uniform(0.8,1.2) 
+        if (self.rotate_trans or self.scale_trans) and index < self.labeled_num:
+            if self.rotate_trans:
+                angle_x = random.uniform(-0.08,0.08)
+                angle_y = random.uniform(-0.08,0.08)
+                angle_z = random.uniform(-0.08,0.08)
+            else:
+                angle_x,angle_y,angle_z = 0.0,0.0,0.0
+            
+            if self.scale_trans:
+                scale_x = random.uniform(0.8,1.2)
+                scale_y = random.uniform(0.8,1.2)
+                scale_z = random.uniform(0.8,1.2) 
+            else: 
+                scale_x,scale_y,scale_z = 1.0,1.0,1.0 
+                
             img1 = affine_transformation(img_array1[np.newaxis,:], 
                                         radius=(angle_x, angle_y, angle_z), 
                                         translate=(0, 0, 0),
@@ -366,12 +385,19 @@ class BCVDatasetCAC(dataset):
                                             bspline_order=0, border_mode="nearest",
                                             constant_val=0, is_reverse=False)
                 mask_array1 = mask1[0,0,:]
-            angle_x = random.uniform(-0.08,0.08)
-            angle_y = random.uniform(-0.08,0.08)
-            angle_z = random.uniform(-0.08,0.08)
-            scale_x = random.uniform(0.8,1.2)
-            scale_y = random.uniform(0.8,1.2)
-            scale_z = random.uniform(0.8,1.2)             
+            if self.rotate_trans:
+                angle_x = random.uniform(-0.08,0.08)
+                angle_y = random.uniform(-0.08,0.08)
+                angle_z = random.uniform(-0.08,0.08)
+            else:
+                angle_x,angle_y,angle_z = 0.0,0.0,0.0
+            
+            if self.scale_trans:
+                scale_x = random.uniform(0.8,1.2)
+                scale_y = random.uniform(0.8,1.2)
+                scale_z = random.uniform(0.8,1.2) 
+            else: 
+                scale_x,scale_y,scale_z = 1.0,1.0,1.0           
             img2 = affine_transformation(img_array2[np.newaxis,:], 
                                         radius=(angle_x, angle_y, angle_z), 
                                         translate=(0, 0, 0),
@@ -400,50 +426,33 @@ class BCVDatasetCAC(dataset):
         br1=overlap1_br
         ul2=overlap2_ul
         br2=overlap2_br
-        # img_array = np.vstack(img_array)
-        # mask_array = np.vstack(mask_array)
-        
-        # get condition for overlap region
-        #mask_array = np.argmax(mask_array, axis=1)
-        overlap_mask = mask_array1[ul1[0]:br1[0],ul1[1]:br1[1],ul1[2]:br1[2]]
-        label_list = list(np.unique(overlap_mask))
-        
-        #print("overlap mask shape:",overlap_mask.shape,"label list unique:",label_list)
-        if len(label_list)==1 and label_list[0]==0:
-            condition = np.random.choice([i for i in range(1,self.num_class)])
-            #print(f"id:{index}, random condition:{condition}")
-        else:
-            if 0 in label_list:
-                label_list.remove(0)
-            condition = np.random.choice(label_list)
-        
-        # get condition1 for all mask array1
+
+
+        # get condition list
         label_list = list(np.unique(mask_array1))
-        if len(label_list)==1 and label_list[0]==0:
-            condition1 = np.random.choice([i for i in range(1, self.num_class)])
-        else:
-            if 0 in label_list:
-                label_list.remove(0)
-            condition1 = np.random.choice(label_list)
+        if 0 in label_list:
+            label_list.remove(0)
+        inter_label_list = list(set(label_list) & set(self.con_list))
+        if len(inter_label_list) == 0:
+            inter_label_list = self.con_list
+        condition1 = np.random.choice(inter_label_list)
 
         # get condition2 for all mask array2
         label_list = list(np.unique(mask_array2))
-        if len(label_list)==1 and label_list[0]==0:
-            condition2 = np.random.choice([i for i in range(1, self.num_class)])
-        else:
-            if 0 in label_list:
-                label_list.remove(0)
-            condition2 = np.random.choice(label_list)
+        if 0 in label_list:
+            label_list.remove(0)
+        inter_label_list = list(set(label_list) & set(self.con_list))
+        if len(inter_label_list) == 0:
+            inter_label_list = self.con_list
+        condition2 = np.random.choice(inter_label_list)
 
 
         img_array = torch.FloatTensor(img_array).unsqueeze(1)
         mask_array = torch.FloatTensor(mask_array).squeeze()
-        condition = torch.Tensor([condition])
         condition_each_volume = torch.Tensor([condition1, condition2])
         sample = {'image': img_array, 'label': mask_array.long(), 'ul1': ul1, 
                   'br1': br1, 'ul2': ul2, 'br2': br2, 
-                  'condition': condition.long(),
-                  'condition_volume':condition_each_volume.long(),
+                  'condition': condition_each_volume.long(),
                   'img_path':img_path}
         return sample
 
@@ -469,7 +478,9 @@ if __name__ == '__main__':
                 iou_bound=[0.3,0.95],
                 labeled_num=4,
                 cutout=True,
-                affine_trans=True
+                rotate_trans=True,
+                con_list=[2,3,5],
+                weights=[0.2,0.2,0.2,0.1,0.3]
             )
     con_list =[0]*5
     con_vol_list = [0]*5
@@ -477,43 +488,15 @@ if __name__ == '__main__':
         #img_path, = data_batch['img_path'], 
         image,label = data_batch['image'], data_batch['label']
         condition = data_batch['condition']
-        condition_volume = data_batch['condition_volume']
+        print(f"con shape:{condition.shape}")
         print(f"label shape:{label.shape}")
         #ul1,br1,ul2,br2 = data_batch['ul1'], data_batch['br1'], data_batch['ul2'], data_batch['br2']
         # print("image shape:", image.shape)
         # print("conditon:",condition)
         # print("condition volume:",condition_volume)
         for con in condition:
+            print("con:",con)
             con_list[con.item()-1]+=1
-        for con_volume in condition_volume:
-            con_vol_list[con_volume.item()-1]+=1
-    for data_batch in tqdm(db_train):
-        #img_path, = data_batch['img_path'], 
-        image,label = data_batch['image'], data_batch['label']
-        condition = data_batch['condition']
-        condition_volume = data_batch['condition_volume']
-        #ul1,br1,ul2,br2 = data_batch['ul1'], data_batch['br1'], data_batch['ul2'], data_batch['br2']
-        # print("image shape:", image.shape)
-        # print("conditon:",condition)
-        # print("condition volume:",condition_volume)
-        for con in condition:
-            con_list[con.item()-1]+=1
-        for con_volume in condition_volume:
-            con_vol_list[con_volume.item()-1]+=1
-    
-    for data_batch in tqdm(db_train):
-        #img_path, = data_batch['img_path'], 
-        image,label = data_batch['image'], data_batch['label']
-        condition = data_batch['condition']
-        condition_volume = data_batch['condition_volume']
-        #ul1,br1,ul2,br2 = data_batch['ul1'], data_batch['br1'], data_batch['ul2'], data_batch['br2']
-        # print("image shape:", image.shape)
-        # print("conditon:",condition)
-        # print("condition volume:",condition_volume)
-        for con in condition:
-            con_list[con.item()-1]+=1
-        for con_volume in condition_volume:
-            con_vol_list[con_volume.item()-1]+=1
     
     print("con list:",con_list)
     print("con volume list:", con_vol_list)

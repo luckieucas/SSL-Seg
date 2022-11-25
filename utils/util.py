@@ -162,7 +162,7 @@ def save_config(config):
     if not os.path.exists("config"):
         os.mkdir("config")
     config_file_name = time.strftime(
-        "%Y-%m-%d=%H:%M:%S", 
+        "%Y-%m-%d=%H-%M-%S", 
         time.localtime()
         ) + "_{}_train.yaml".format(config['exp'])
     with open(os.path.join("config", config_file_name), "w") as file:

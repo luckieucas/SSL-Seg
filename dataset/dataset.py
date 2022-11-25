@@ -11,7 +11,9 @@ import os
 import random
 import torch 
 from torch.utils.data import Dataset as dataset
-from torch.utils.data import DataLoader as dataloader 
+from torch.utils.data import DataLoader as dataloader
+from torch.utils.data.sampler import Sampler
+import itertools
 import numpy as np 
 from glob import glob
 import SimpleITK as sitk
@@ -19,9 +21,6 @@ try:
     from .data_augmentation import rotation, affine_transformation, random_cutout
 except:
     from data_augmentation import rotation, affine_transformation, random_cutout
-#from .sampler import BatchSampler, ClassRandomSampler
-#from data_augmentation import rotation, affine_transformation, random_cutout
-#from sampler import BatchSampler, ClassRandomSampler #for test
 
 
 
@@ -123,23 +122,27 @@ class Dataset(dataset):
 
 class DatasetSemi(dataset):
     def __init__(self, img_list_file, patch_size=(48, 224, 224),
-                cutout=False, affine_trans=False, random_rotflip=False,
+                cutout=False, rotate_trans=False, scale_trans=False,
+                random_rotflip=False,
                 num_class=2, edge_prob=0.1, upper=1000, lower=-1000,
-                labeled_num=4, train_supervised=False):
+                labeled_num=4, train_supervised=False, normalization='Zscore'):
         self.patch_size = patch_size
         self.cutout = cutout
-        self.affine_trans = affine_trans
+        self.rotate_trans = rotate_trans
+        self.scale_trans = scale_trans
         self.random_rotflip = random_rotflip
         self.num_class = num_class
         self.edge_prob = edge_prob
         self.upper = upper
         self.lower = lower
+        self.normalization = normalization
         self.labeled_num = labeled_num
         self.train_supervised = train_supervised
         with open(img_list_file, 'r') as f:
             self.img_list = [img.replace("\n","") for img in f.readlines()]
         if self.train_supervised:
             self.img_list = self.img_list[:self.labeled_num]
+   
     def __getitem__(self, index):
         if len(self.img_list[index].strip().split()) > 1:
             img_path, mask_path = self.img_list[index].strip().split()
@@ -157,8 +160,14 @@ class DatasetSemi(dataset):
         img_array = sitk.GetArrayFromImage(image) 
         mask_array = sitk.GetArrayFromImage(mask)
         mask_array = mask_array.astype(np.uint8)
+        if self.random_rotflip:
+            k = np.random.randint(0, 4)
+            image = np.rot90(img_array, k)
+            label = np.rot90(mask_array, k)
+            axis = np.random.randint(0, 2)
+            img_array = np.flip(image, axis=axis).copy()
+            mask_array = np.flip(label, axis=axis).copy()
         img_shape = img_array.shape
-        
         if img_shape[0]< self.patch_size[0]:
             #need to extend data
             gap = self.patch_size[0]-img_shape[0]
@@ -170,35 +179,32 @@ class DatasetSemi(dataset):
             mask_array = mask_array_extend
         if img_shape[1]< self.patch_size[1]:
                 #need to extend data
+            img_shape = img_array.shape
             gap = self.patch_size[1]-img_shape[1]
             img_array_extend = np.zeros(( img_shape[0], self.patch_size[1],img_shape[2]))
             mask_array_extend = np.zeros(( img_shape[0], self.patch_size[1], img_shape[2]))
-            img_array_extend[:,gap//2:gap//2+img_shape[0],:] = img_array
-            mask_array_extend[:,gap//2:gap//2+img_shape[0],:] = mask_array
+            img_array_extend[:,gap//2:gap//2+img_shape[1],:] = img_array
+            mask_array_extend[:,gap//2:gap//2+img_shape[1],:] = mask_array
             img_array = img_array_extend
             mask_array = mask_array_extend
         if img_shape[2]< self.patch_size[2]:
                     #need to extend data
+            img_shape = img_array.shape
             gap = self.patch_size[2]-img_shape[2]
             img_array_extend = np.zeros(( img_shape[0],img_shape[1], self.patch_size[2]))
             mask_array_extend = np.zeros(( img_shape[0], img_shape[1], self.patch_size[2]))
-            img_array_extend[:,:,gap//2:gap//2+img_shape[0]] = img_array
-            mask_array_extend[:,:,gap//2:gap//2+img_shape[0]] = mask_array
+            img_array_extend[:,:,gap//2:gap//2+img_shape[2]] = img_array
+            mask_array_extend[:,:,gap//2:gap//2+img_shape[2]] = mask_array
             img_array = img_array_extend
             mask_array = mask_array_extend
         #print("mask array shape:", mask_array.shape)
           # do random flip
-        if self.random_rotflip:
-            k = np.random.randint(0, 4)
-            image = np.rot90(img_array, k)
-            label = np.rot90(mask_array, k)
-            axis = np.random.randint(0, 2)
-            img_array = np.flip(image, axis=axis).copy()
-            mask_array = np.flip(label, axis=axis).copy()
         # 将灰度值在阈值之外的截断掉
         """Normalize the image"""
-        if "heartMR" in img_name:
+        if "heartMR" in img_name or self.normalization=='MinMax':
             img_array = self.normalize_minmax_data(img_array)
+            np.clip(img_array, 0.0, 1.0, out=img_array) # norm to(0,1)
+            print('min max norm')
         else:
             np.clip(img_array,self.lower, self.upper, out=img_array)
             img_array = (img_array - img_array.mean())/img_array.std()
@@ -235,13 +241,19 @@ class DatasetSemi(dataset):
         # do transformation
 
         
-        if self.affine_trans:
-            angle_x = random.uniform(-0.08,0.08)
-            angle_y = random.uniform(-0.08,0.08)
-            angle_z = random.uniform(-0.08,0.08)
-            scale_x = random.uniform(0.8,1.2)
-            scale_y = random.uniform(0.8,1.2)
-            scale_z = random.uniform(0.8,1.2)     
+        if self.rotate_trans or self.scale_trans:
+            if self.rotate_trans:
+                angle_x = random.uniform(-0.08,0.08)
+                angle_y = random.uniform(-0.08,0.08)
+                angle_z = random.uniform(-0.08,0.08)
+            else:
+                angle_x,angle_y,angle_z = 0.0,0.0,0.0
+            if self.scale_trans:
+                scale_x = random.uniform(0.8,1.2)
+                scale_y = random.uniform(0.8,1.2)
+                scale_z = random.uniform(0.8,1.2) 
+            else:
+                scale_x,scale_y,scale_z = 1.0,1.0,1.0 
             img = affine_transformation(img_array[np.newaxis,:], 
                                         radius=(angle_x, angle_y, angle_z), 
                                         translate=(0, 0, 0),
@@ -324,6 +336,56 @@ def get_train_loaders(config):
         'val': dataloader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     }
 
+
+class TwoStreamBatchSampler(Sampler):
+    """Iterate two sets of indices
+
+    An 'epoch' is one iteration through the primary indices.
+    During the epoch, the secondary indices are iterated through
+    as many times as needed.
+    """
+
+    def __init__(self, primary_indices, secondary_indices, batch_size, secondary_batch_size):
+        self.primary_indices = primary_indices
+        self.secondary_indices = secondary_indices
+        self.secondary_batch_size = secondary_batch_size
+        self.primary_batch_size = batch_size - secondary_batch_size
+
+        assert len(self.primary_indices) >= self.primary_batch_size > 0
+        assert len(self.secondary_indices) >= self.secondary_batch_size > 0
+
+    def __iter__(self):
+        primary_iter = iterate_once(self.primary_indices)
+        secondary_iter = iterate_eternally(self.secondary_indices)
+        return (
+            primary_batch + secondary_batch
+            for (primary_batch, secondary_batch)
+            in zip(grouper(primary_iter, self.primary_batch_size),
+                   grouper(secondary_iter, self.secondary_batch_size))
+        )
+
+    def __len__(self):
+        return len(self.primary_indices) // self.primary_batch_size
+
+
+def iterate_once(iterable):
+    return np.random.permutation(iterable)
+
+
+def iterate_eternally(indices):
+    def infinite_shuffles():
+        while True:
+            yield np.random.permutation(indices)
+    return itertools.chain.from_iterable(infinite_shuffles())
+
+
+def grouper(iterable, n):
+    "Collect data into fixed-length chunks or blocks"
+    # grouper('ABCDEFG', 3) --> ABC DEF"
+    args = [iter(iterable)] * n
+    return zip(*args)
+
+
 if __name__ == '__main__':
     # test generic dataset
     # img_list_file = "/data/liupeng/hip_knee_segmentation/datasets/CTAndLabels_resample/train.txt"
@@ -333,12 +395,15 @@ if __name__ == '__main__':
     #     print("step:{}, img_array shape:{}, mask array shape:{}".format(i, img_array.shape, mask_array.shape))
     
     #test generic dataset
-    img_list_file = "/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/MMWHS/MMWHS_train.txt"
+    img_list_file = "/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/BCV/train.txt"
     test_dataset = DatasetSemi(
-        img_list_file,num_class=8,cutout=True,affine_trans=True, random_rotflip=True)
+        img_list_file,num_class=8,cutout=True,rotate_trans=True, 
+        random_rotflip=True,normalization='MinMax'
+    )
     for data_batch in test_dataset:
         image, label = data_batch['image'], data_batch['label']
         print(image.shape, label.shape)
+        print(f"min:{image.min()}, max:{image.max()}")
     #test_dataloader = dataloader(test_dataset,batch_size=2,shuffle=True)
     # dataloader with sampler
     # test_dataloader = dataloader(test_dataset, batch_sampler = BatchSampler(ClassRandomSampler(test_dataset), 2, True), num_workers=2, pin_memory=True)

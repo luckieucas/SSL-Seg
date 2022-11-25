@@ -6,30 +6,43 @@ Date: 2021-04-19 13:09:02
 LastEditors: Luckie
 LastEditTime: 2021-06-09 15:00:23
 '''
+from email.policy import default
 import os 
 import shutil
 import torch
-import torch.nn.functional as F
-from pathlib import Path
 import math
 import numpy as np
 import SimpleITK as sitk
 from medpy import metric
 from tqdm import tqdm
 from random import shuffle
+from typing import OrderedDict
 import yaml
 import argparse
+from glob import glob
 
-from unet3d.model import get_model
-from unet3d.config import load_config
 from networks.net_factory_3d import net_factory_3d
+from batchgenerators.utilities.file_and_folder_operations import save_json
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str,
-                    default='test_config_new.yaml', help='training configuration')
+                    default='test_config_new.yaml', 
+                    help='training configuration'
+)
+parser.add_argument('--gpu', type=str, default='0',help='gpu id for testing')
+parser.add_argument(
+    '--model_path', type=str,
+    default='/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/model/LA_8_C3PS_model1_first_SGD_SGD/unet_3D_old/model_iter_10600_dice_0.8908.pth',
+    help='model path for testing'
+)
 
 
-task_name_id_dict={"full":0,"spleen":1,"kidney":2,"liver":4,"pancreas":5}
+class_id_name_dict = {
+    'MMWHS':['MYO', 'LA', 'LV', 'RA', 'AA', 'PA', 'RV'],
+    'BCV':['Spleen', 'Right Kidney', 'Left Kidney','Liver','Pancreas'],
+    'LA':['LA']
+}
+
 def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1, 
                      condition=-1, method='regular'):
     w, h, d = image.shape
@@ -79,15 +92,34 @@ def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1,
                 test_patch = torch.from_numpy(test_patch).cuda()
         
                 with torch.no_grad():
-                    y = net(test_patch)
+                    if condition>0:
+                        condition = torch.tensor([condition],dtype=torch.long, device="cuda")
+                        y1 = net(test_patch, condition)
+                    else:
+                        y1 = net(test_patch)
+                        if len(y1)>0 and isinstance(y1, (tuple, list)):
+                            y1 = y1[0]
                     # ensemble
-                    y = torch.softmax(y, dim=1)
+                    y = torch.softmax(y1, dim=1)
                 y = y.cpu().data.numpy()
                 y = y[0, :, :, :, :]
-                score_map[:, xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] \
-                    = score_map[:, xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] + y
-                cnt[xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] \
-                    = cnt[xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] + 1
+
+                score_map[
+                    :, xs:xs+patch_size[0], 
+                    ys:ys+patch_size[1], 
+                    zs:zs+patch_size[2]
+                ] = score_map[
+                    :, xs:xs+patch_size[0], 
+                    ys:ys+patch_size[1], zs:zs+patch_size[2]
+                ] + y
+                
+                cnt[
+                    xs:xs+patch_size[0], ys:ys+patch_size[1], 
+                    zs:zs+patch_size[2]
+                ] = cnt[
+                    xs:xs+patch_size[0], ys:ys+patch_size[1], 
+                    zs:zs+patch_size[2]
+                ] + 1
     score_map = score_map/np.expand_dims(cnt, axis=0)
     label_map = np.argmax(score_map, axis=0)
 
@@ -116,24 +148,33 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
                       patch_size=(48, 160, 160), stride_xy=32, stride_z=24, 
                       condition=-1, method="regular", cal_hd95=False,
                       cut_lower=-68, cut_upper=200, save_prediction=False,
-                      prediction_save_path='./'):
+                      prediction_save_path='./',
+                      class_name_list=[]):
     with open(test_list, 'r') as f:
         image_list = [img.replace('\n','') for img in f.readlines()]
     total_metric = np.zeros((num_classes-1, 2))
-    print("Validation begin")
+    all_scores = OrderedDict() # for save as json
+    all_scores['all'] = []
+    all_scores['mean'] = OrderedDict()
+    print("***************************validation begin************************")
     condition_list = [i for i in range(1,num_classes)]
     shuffle(condition_list)
     img_num = np.zeros((num_classes-1,1))
     for i, image_path in enumerate(tqdm(image_list)):
-        print(f"=============>processing {image_path}")
+        res_metric = OrderedDict()
         if len(image_path.strip().split()) > 1:
             image_path, mask_path = image_path.strip().split()
         else: 
             mask_path = image_path.replace('img','label')
         assert os.path.isfile(mask_path),"invalid mask path error"
-        
-        """get task name and task id"""
         _,img_name = os.path.split(image_path)
+        print(f"=============>processing {img_name}")
+        
+        # use for save json results
+        res_metric['image_path'] = image_path 
+        res_metric['mask_path'] = mask_path
+        
+        
 
         image_sitk = sitk.ReadImage(image_path)
         spacing = image_sitk.GetSpacing()
@@ -145,78 +186,94 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
             net, image, stride_xy, stride_z, patch_size, 
             num_classes=num_classes, condition=condition, method=method)
         
+        each_metric = np.zeros((num_classes-1, 2))
         for i in range(1, num_classes):
             metrics = cal_metric(
                 label == i, prediction == i, cal_hd95=cal_hd95, spacing=spacing
             )
-            print(f"class:{i}, metric:{metrics}")
+            print(f"class:{class_name_list[i-1]}, metric:{metrics}")
+            res_metric[class_name_list[i-1]] = {
+                'Dice':metrics[0],'HD95':metrics[1]
+            }
+
             img_num[i-1]+=1
             total_metric[i-1, :] += metrics
-
+            each_metric[i-1, :] += metrics
+        res_metric['Mean'] = {
+                'Dice':each_metric[:,0].mean(),'HD95':each_metric[:,1].mean()
+            }
+        all_scores['all'].append(res_metric)
         if save_prediction: 
             pred_itk = sitk.GetImageFromArray(prediction.astype(np.uint8))
             pred_itk.SetSpacing(spacing)
-            _,image_name = os.path.split(image_path)
-            sitk.WriteImage(pred_itk, prediction_save_path+image_name.replace(".nii.gz","_pred.nii.gz"))
-    print("Validation end")
-    print(f"img_num:{img_num}")
-    return total_metric / img_num
+            sitk.WriteImage(
+                pred_itk, 
+                prediction_save_path+img_name.replace(".nii.gz","_pred.nii.gz")
+            )
+    
+    mean_metric = total_metric / img_num
+    for i in range(1, num_classes):
+        all_scores['mean'][class_name_list[i-1]] = {
+            'Dice':mean_metric[i-1][0],
+            'HD95': mean_metric[i-1][1]
+        }
+    all_scores['mean']['mean']={
+        'Dice':mean_metric[:,0].mean(),
+        'HD95':mean_metric[:,1].mean()
+    }
+    save_json(all_scores,prediction_save_path+"/Results.json")
+    print("***************************validation end**************************")
+    return mean_metric
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    config = yaml.safe_load(open(args.config, 'r'))
-    os.environ['CUDA_VISIBLE_DEVICES'] = config['gpu']
-    # model = get_model(config['model'])
-    best_dice = 0
-    best_dice_list = 0
-    best_epoch = 200
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+    model_path = args.model_path
+
+    root_path,_ = os.path.split(model_path)
+    config_file_list =  glob(root_path+"/*yaml")
+    sorted(config_file_list)
+    config_file = config_file_list[-1]
+    print(f"===========> using config file: {os.path.split(config_file)[1]}")
+    config = yaml.safe_load(open(config_file, 'r'))
+    method_name = config['method']
+    method = 'regular'
+    if method_name == 'URPC':
+        config['backbone'] = 'URPC'
+        method = 'urpc'
+
     dataset_name = config['dataset_name']
+    class_name_list = class_id_name_dict[dataset_name]
     dataset_config = config['DATASET'][dataset_name]
     cut_upper = dataset_config['cut_upper']
     cut_lower = dataset_config['cut_lower']
-    for epoch in range(357,358):
-        print(f"-----test epoch:{epoch}------")
-        #model_path= f"/data/liupeng/semi-supervised_segmentation/3D_U-net/models/train_multi_organ_all_data_baseline_0601/epoch_{epoch}.pth"
-        #model_path = "../model/BCV_4_C3PS_test/unet_3D/model1_iter_8800_dice_0.5924.pth"
-        model_path = "/data/liupeng/semi-supervised_segmentation/3D_U-net_baseline/models/train_MMWHS_all_data_baseline_sgd/best_iter1600_dice0.6124.pth"
-        model_path = model_path
-        save_path,_ = os.path.split(model_path)
-        prediction_save_path = "{}/Prediction/".format(save_path)
-        if os.path.exists(prediction_save_path):
-            shutil.rmtree(prediction_save_path)
-        os.makedirs(prediction_save_path)
-        model = net_factory_3d(net_type='unet_3D',in_chns=1, 
-                                      class_num=dataset_config['num_classes'],
-                                      model_config=config['model'])
-        model.load_state_dict(torch.load(model_path, map_location="cuda:0"))
-        try:
-            epoch = int(model_path.split("_")[-1].replace(".pth",""))
-        except ValueError:
-            print('epoch value error')
-            epoch = 0
-        
-        epoch = 0
-        test_list = dataset_config['test_list']
-        patch_size = config['DATASET']['patch_size']
-        model = model.cuda()
-        model.eval()
-        avg_metric = test_all_case_BCV(
-                            model,
-                            test_list=test_list,
-                            num_classes=dataset_config['num_classes'], 
-                            patch_size=patch_size,
-                            stride_xy=64, 
-                            stride_z=64,
-                            cal_hd95=True,
-                            cut_upper=cut_upper,
-                            cut_lower=cut_lower,
-                            save_prediction=True,
-                            prediction_save_path=prediction_save_path
-                        )
-        print(avg_metric)
-        print(avg_metric[:, 0].mean(),avg_metric[:,1].mean())
-        if best_dice < avg_metric[:, 0].mean():
-            best_dice = avg_metric[:, 0].mean()
-            best_epoch = epoch
-            best_dice_list = avg_metric
-    print(f"best_dice:{best_dice}, best_epoch:{best_epoch}, best_dice_list:{avg_metric}")
+
+    pred_save_path = "{}/Prediction/".format(root_path)
+    if os.path.exists(pred_save_path):
+        shutil.rmtree(pred_save_path)
+    os.makedirs(pred_save_path)
+    model = net_factory_3d(net_type=config['backbone'],in_chns=1, 
+                                class_num=dataset_config['num_classes'],
+                                model_config=config['model'])
+    model.load_state_dict(torch.load(model_path, map_location="cuda:0"))  
+    test_list = dataset_config['test_list']
+    patch_size = config['DATASET']['patch_size']
+    model = model.cuda()
+    model.eval()
+    avg_metric = test_all_case_BCV(
+                        model,
+                        test_list=test_list,
+                        num_classes=dataset_config['num_classes'], 
+                        patch_size=patch_size,
+                        stride_xy=64, 
+                        stride_z=64,
+                        cal_hd95=True,
+                        cut_upper=cut_upper,
+                        cut_lower=cut_lower,
+                        save_prediction=True,
+                        prediction_save_path=pred_save_path,
+                        class_name_list=class_name_list,
+                        method = method
+                    )
+    print(avg_metric)
+    print(avg_metric[:, 0].mean(),avg_metric[:,1].mean())

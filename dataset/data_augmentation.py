@@ -268,6 +268,14 @@ def rotation(i_volume,shape,angle):
                                     constant_val=0)
     return new_volume[0,:]
 
+def random_rotate_flip(img_array, mask_array):
+    k = np.random.randint(0, 4)
+    image = np.rot90(img_array, k)
+    label = np.rot90(mask_array, k)
+    axis = np.random.randint(0, 2)
+    img_array = np.flip(image, axis=axis).copy()
+    mask_array = np.flip(label, axis=axis).copy()
+    return img_array, mask_array
 
 def random_cutout(mask_array, num=1, size=(5,5,5),):
     patch_size = mask_array.shape

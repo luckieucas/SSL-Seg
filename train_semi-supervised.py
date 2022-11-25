@@ -37,7 +37,7 @@ parser.add_argument('--config', type=str,
 if __name__ == "__main__":
     args = parser.parse_args()
     config = yaml.safe_load(open(args.config, 'r'))
-    os.environ['CUDA_VISIBLE_DEVICES'] = config['gpu']
+    #os.environ['CUDA_VISIBLE_DEVICES'] = config['gpu']
     save_config(config) # save config to yaml file with timestamp
     if not config['deterministic']:
         cudnn.benchmark = True
@@ -51,25 +51,28 @@ if __name__ == "__main__":
     torch.manual_seed(config['seed'])
     torch.cuda.manual_seed(config['seed'])
 
-    snapshot_path = "../model/{}_{}_{}_{}/{}".format(
+    snapshot_path = "../model/{}_{}_{}_{}_{}_{}/{}".format(
         config['dataset_name'], 
         config['DATASET']['labeled_num'], 
         config['method'], 
         config['exp'],
+        config['optimizer_type'],
+        config['optimizer2_type'],
         config['backbone']   
     )
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
+
     # move config to snapshot_path
     shutil.copyfile(args.config, snapshot_path+"/"+
-                                 time.strftime("%Y-%m-%d=%H:%M:%S", 
+                                 time.strftime("%Y-%m-%d=%H-%M-%S", 
                                                time.localtime())+
                                                "_train_config.yaml")
     logging.basicConfig(
         filename=snapshot_path+"/log.txt", 
         level=logging.INFO,
         format='[%(asctime)s.%(msecs)03d] %(message)s', 
-        datefmt='%H:%M:%S'
+        datefmt='%H-%M-%S'
     )
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(config))

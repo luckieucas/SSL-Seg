@@ -20,9 +20,7 @@ from utils import losses,ramps
 from dataset.BCVData import BCVDataset, BCVDatasetCAC
 from dataset.dataset import DatasetSemi
 from networks.net_factory_3d import net_factory_3d
-from dataset.brats2019 import (BraTS2019, CenterCrop, RandomCrop,
-                                   RandomRotFlip, ToTensor,
-                                   TwoStreamBatchSampler)
+from dataset.dataset import TwoStreamBatchSampler
 from val_3D import test_all_case,test_all_case_BCV
 from unet3d.losses import DiceLoss #test loss
 
@@ -41,11 +39,14 @@ class SemiSupervisedTrainer:
         self.lr_scheduler_eps = config['lr_scheduler_eps']
         self.lr_scheduler_patience = config['lr_scheduler_patience']
         self.seed = config['seed']
-        self.train_data_path = config['root_path']
         self.initial_lr = config['initial_lr']
+        self.initial2_lr = config['initial2_lr']
+        self.model1_thresh = config['model1_thresh'] #threshold for model1 pred
+        self.model2_thresh = config['model2_thresh'] #threshold for model2 pred
         self.optimizer_type = config['optimizer_type']
+        self.optimizer2_type = config['optimizer2_type']
         self.backbone = config['backbone']
-        self.train_data_path = config['root_path']
+        self.backbone2 = config['backbone2']
         self.max_iterations = config['max_iterations']
         self.began_semi_iter = config['began_semi_iter']
         self.ema_decay = config['ema_decay']
@@ -56,7 +57,9 @@ class SemiSupervisedTrainer:
         self.val_freq = config['val_freq']
 
         # config for training from checkpoint
+        self.continue_wandb = config['continue_wandb']
         self.continue_training = config['continue_training']
+        self.wandb_id = config['wandb_id']
         self.network_checkpoint = config['model_checkpoint']
         self.network2_checkpoint = config['model2_checkpoint'] # for CPS based methods
 
@@ -68,45 +71,55 @@ class SemiSupervisedTrainer:
         dataset = config['DATASET']
         self.patch_size = dataset['patch_size']
         self.labeled_num = dataset['labeled_num']
+        self.labeled_num_pl = dataset['labeled_num_pl']
 
         self.batch_size = dataset['batch_size']
         self.labeled_bs = dataset['labeled_bs']
         self.cutout = dataset['cutout']
-        self.affine_trans = dataset['affine_trans']
+        self.rotate_trans = dataset['rotate_trans']
+        self.scale_trans = dataset['scale_trans']
         self.random_rotflip = dataset['random_rotflip']
         self.edge_prob = dataset['edge_prob']
+        self.normalization = dataset['normalization']
         self.dataset_name = config['dataset_name']
         
         dataset_config = dataset[self.dataset_name]
         self.num_classes = dataset_config['num_classes']
+        self.class_name_list = dataset_config['class_name_list']
         self.training_data_num = dataset_config['training_data_num']
         self.testing_data_num = dataset_config['testing_data_num']
         self.train_list = dataset_config['train_list']
+        #train_list_pl: train list for partial labeled data
+        self.train_list_pl = dataset_config['train_list_pl'] 
         self.test_list = dataset_config['test_list']
         self.cut_upper = dataset_config['cut_upper']
         self.cut_lower = dataset_config['cut_lower']
+        self.weights = dataset_config['weights']
 
         # config for method
         self.method_name = config['method']
         self.method_config = config['METHOD'][self.method_name]
         self.use_CAC = config['use_CAC']
+        self.use_PL = config['use_PL']
 
         self.experiment_name = None
-        self.ce_loss = nn.CrossEntropyLoss()
+        self.ce_loss = nn.CrossEntropyLoss(ignore_index=255)
         self.dice_loss = losses.DiceLoss(self.num_classes)
         self.dice_loss_con = losses.DiceLoss(2)
         self.dice_loss2 = DiceLoss(normalization='softmax')
         self.best_performance = 0.0
         self.best_performance2 = 0.0 # for CPS based methods
         self.current_iter = 0
-        self.network = None
-        self.ema_network = None # for MT based methods
-        self.network2 = None # for CPS based methods
+        self.model = None
+        self.ema_model = None # for MT based methods
+        self.model2 = None # for CPS based methods
         self.scaler = None 
         self.scaler2 = None
 
         self.dataset = None
+        self.dataset_pl = None # dataset for partial labeled data
         self.dataloader = None
+        self.dataloader_pl = None # dataloader for partial label data
         self.wandb_logger = None
         self.tensorboard_writer = None
         self.labeled_idxs = None 
@@ -114,6 +127,7 @@ class SemiSupervisedTrainer:
 
         # generate by training process
         self.current_lr = self.initial_lr
+        self.current2_lr = self.initial2_lr
         self.loss = None
         self.loss_ce = None 
         self.loss_dice = None
@@ -124,56 +138,76 @@ class SemiSupervisedTrainer:
     
     def initialize(self):
         self.experiment_name = f"{self.dataset_name}_{self.method_name}_"\
-                               f"{self.backbone}_labeled{self.labeled_num}_"\
-                               f"{self.optimizer_type}_{self.exp}"
-        self.wandb_logger = wandb.init(name=self.experiment_name,
-                                        project="semi-supervised-segmentation",
-                                        config = self.config)
+                               f"labeled{self.labeled_num}_"\
+                               f"{self.optimizer_type}_{self.optimizer2_type}"\
+                               f"_{self.exp}"
+
+        if self.continue_wandb:
+            self.wandb_logger = wandb.init(name=self.experiment_name,
+                                            project="semi-supervised-segmentation",
+                                            config = self.config,
+                                            id=self.wandb_id,
+                                            resume='must')
+        else:
+            self.wandb_logger = wandb.init( name=self.experiment_name,
+                                            project="semi-supervised-segmentation",
+                                            config = self.config)
+        
         wandb.tensorboard.patch(root_logdir=self.output_folder + '/log')
         self.tensorboard_writer = SummaryWriter(self.output_folder + '/log')
         self.load_dataset()
         self.initialize_optimizer_and_scheduler()
     
     def initialize_network(self):
-        self.network = net_factory_3d(net_type=self.backbone,in_chns=1, 
-                                      class_num=self.num_classes,
-                                      model_config=self.config['model'],
-                                      device=self.device)
+        self.model = net_factory_3d(
+            net_type=self.backbone,in_chns=1, class_num=self.num_classes,
+            model_config=self.config['model'], device=self.device
+        )
+        if self.method_name in ['MT','UAMT']:
+            self.ema_model = net_factory_3d(
+                net_type=self.backbone,in_chns=1, class_num=self.num_classes,
+                model_config=self.config['model'], device=self.device
+            )
+            for param in self.ema_model.parameters():
+                param.detach_()
+        elif self.method_name == 'CPS':
+            self.model2 = net_factory_3d(
+                net_type=self.backbone,in_chns=1, class_num=self.num_classes,
+                model_config=self.config['model'], device=self.device
+            )
+            if self.continue_training:
+                model2_state_dict = torch.load(self.network2_checkpoint)
+                self.model2.load_state_dict(model2_state_dict)
+                print(f"====>sucessfully load model from{self.network2_checkpoint}")
+            else:
+                self._kaiming_normal_init_weight()
+        elif self.method_name in ['C3PS','ConNet']:
+            self.model2 = net_factory_3d(
+                self.backbone2, in_chns=1, class_num=2,device=self.device
+            )
+            if self.continue_training:
+                model2_state_dict = torch.load(self.network2_checkpoint)
+                self.model2.load_state_dict(model2_state_dict)
+                print(f"====>sucessfully load model from{self.network2_checkpoint}")
+            else:
+                self._kaiming_normal_init_weight()
+        elif self.method_name == 'URPC':
+            print("URPC")
+            self.model = net_factory_3d(
+                net_type='URPC', class_num=self.num_classes
+            )
+        elif self.method_name == 'McNet':
+            self.model = net_factory_3d(
+                net_type='McNet',in_chns=1, class_num=self.num_classes, 
+                device=self.device
+            )
         if self.continue_training:
             model_state_dict = torch.load(self.network_checkpoint)
-            self.network.load_state_dict(model_state_dict)
+            self.model.load_state_dict(model_state_dict)
             self.current_iter = self.config['current_iter_num']
             print(f"====>sucessfully load model from{self.network_checkpoint}")
         else:
             self._xavier_normal_init_weight()
-        if self.method_name in ['MT','UAMT']:
-            self.ema_network = net_factory_3d(net_type=self.backbone,in_chns=1, 
-                                          class_num=self.num_classes,
-                                          model_config=self.config['model'],
-                                          device=self.device)
-            for param in self.ema_network.parameters():
-                param.detach_()
-        elif self.method_name == 'CPS':
-            self.network2 = net_factory_3d(net_type=self.backbone,in_chns=1, 
-                                      class_num=self.num_classes,
-                                      model_config=self.config['model'],
-                                      device=self.device)
-            if self.continue_training:
-                model2_state_dict = torch.load(self.network2_checkpoint)
-                self.network2.load_state_dict(model2_state_dict)
-                print(f"sucessfully load model from{self.network2_checkpoint}")
-            else:
-                self._kaiming_normal_init_weight()
-        elif self.method_name == 'C3PS':
-            self.network2 = net_factory_3d("unet_3D_condition", in_chns=1, 
-                                           class_num=2,device=self.device)
-            if self.continue_training:
-                model2_state_dict = torch.load(self.network2_checkpoint)
-                self.network2.load_state_dict(model2_state_dict)
-                print(f"sucessfully load model from{self.network2_checkpoint}")
-            else:
-                self._kaiming_normal_init_weight()
-
     def load_checkpoint(self, fname, train=True):
         pass
 
@@ -184,7 +218,8 @@ class SemiSupervisedTrainer:
 
         self.dataset = DatasetSemi(img_list_file=self.train_list, 
                                         cutout=self.cutout,
-                                        affine_trans=self.affine_trans, 
+                                        rotate_trans=self.rotate_trans, 
+                                        scale_trans=self.scale_trans,
                                         random_rotflip=self.random_rotflip,
                                         patch_size=self.patch_size, 
                                         num_class=self.num_classes, 
@@ -192,8 +227,9 @@ class SemiSupervisedTrainer:
                                         upper=self.cut_upper,
                                         lower=self.cut_lower,
                                         labeled_num=self.labeled_num,
-                                        train_supervised=train_supervised)
-        if self.method_name == 'C3PS':
+                                        train_supervised=train_supervised,
+                                        normalization=self.normalization)
+        if self.method_name in ['C3PS','ConNet']:
             self.dataset = BCVDatasetCAC(
                 img_list_file=self.train_list,
                 patch_size=self.patch_size,
@@ -203,21 +239,42 @@ class SemiSupervisedTrainer:
                            self.method_config['iou_bound_high']],
                 labeled_num=self.labeled_num,
                 cutout=self.cutout,
-                affine_trans=self.affine_trans,
+                rotate_trans=self.rotate_trans,
+                scale_trans=self.scale_trans,
+                random_rotflip=self.random_rotflip,
                 upper=self.cut_upper,
-                lower=self.cut_lower
+                lower=self.cut_lower,
+                con_list=self.method_config['con_list'],
+                weights=self.weights
+            )
+            self.dataset_pl = DatasetSemi(
+                img_list_file=self.train_list_pl, 
+                cutout=self.cutout,
+                rotate_trans=self.rotate_trans, 
+                random_rotflip=self.random_rotflip,
+                patch_size=self.patch_size, 
+                num_class=2, 
+                edge_prob=self.edge_prob,
+                upper=self.cut_upper,
+                lower=self.cut_lower,
+                labeled_num=self.labeled_num_pl, #TODO labeled num for partial label
+                train_supervised=True,
+                normalization=self.normalization
             )
 
     def get_dataloader(self):
         self.dataloader = DataLoader(self.dataset, batch_size=self.batch_size, 
-                                     shuffle=True, num_workers=4, 
-                                     pin_memory=True)
+                                     shuffle=True, num_workers=2, 
+                                     pin_memory=False)
+        self.dataloader_pl = DataLoader(self.dataset_pl, batch_size=self.batch_size, 
+                                     shuffle=True, num_workers=2, 
+                                     pin_memory=False)
 
     def initialize_optimizer_and_scheduler(self):
-        assert self.network is not None, "self.initialize_network must be called first"
+        assert self.model is not None, "self.initialize_network must be called first"
         self.scaler = amp.GradScaler()
         if self.optimizer_type == "Adam":
-            self.optimizer = torch.optim.Adam(self.network.parameters(), 
+            self.optimizer = torch.optim.Adam(self.model.parameters(), 
                                           self.initial_lr, 
                                           weight_decay=self.weight_decay,
                                           amsgrad=True)
@@ -225,35 +282,32 @@ class SemiSupervisedTrainer:
         # self.optimizer = torch.optim.Adam(self.network.parameters(), lr=1e-3, 
         #                                   weight_decay=self.weight_decay)
         elif self.optimizer_type == 'SGD':
-            self.optimizer = torch.optim.SGD(self.network.parameters(), 
+            self.optimizer = torch.optim.SGD(self.model.parameters(), 
                                             lr=self.initial_lr, momentum=0.9, 
                                             weight_decay=self.weight_decay)
         else:
             print("unrecognized optimizer, use Adam instead")
-            self.optimizer = torch.optim.Adam(self.network.parameters(), 
+            self.optimizer = torch.optim.Adam(self.model.parameters(), 
                                           self.initial_lr, 
                                           weight_decay=self.weight_decay,
                                           amsgrad=True)
         
-        if self.method_name in ['CPS', 'C3PS']:
-            # self.optimizer2 = torch.optim.Adam(self.network2.parameters(),
-            #                                    lr=1e-3, 
-            #                                    weight_decay=self.weight_decay)
+        if self.method_name in ['CPS', 'C3PS', 'ConNet']:
             self.scaler2 = amp.GradScaler()
-            if self.optimizer_type == 'Adam':
+            if self.optimizer2_type == 'Adam':
                 self.optimizer2 = torch.optim.Adam(
-                    self.network2.parameters(), 
-                    self.initial_lr, 
+                    self.model2.parameters(), 
+                    self.initial2_lr, 
                     weight_decay=self.weight_decay,
                     amsgrad=True)
-            elif self.optimizer_type == 'SGD':
-                self.optimizer2 = torch.optim.SGD(self.network2.parameters(), 
-                    lr=self.initial_lr, momentum=0.9, 
+            elif self.optimizer2_type == 'SGD':
+                self.optimizer2 = torch.optim.SGD(self.model2.parameters(), 
+                    lr=self.initial2_lr, momentum=0.9, 
                     weight_decay=self.weight_decay)
             else:
                 print("unrecognized optimizer type, use adam instead!")
                 self.optimizer = torch.optim.Adam(
-                    self.network2.parameters(), 
+                    self.model2.parameters(), 
                     self.initial_lr, 
                     weight_decay=self.weight_decay,
                     amsgrad=True
@@ -272,18 +326,18 @@ class SemiSupervisedTrainer:
             self.dataloader = DataLoader(self.dataset, 
                                          batch_size=self.batch_size,
                                          shuffle=True, num_workers=2,
-                                         pin_memory=True)
+                                         pin_memory=False)
             self.max_epoch = self.max_iterations // len(self.dataloader) + 1
             print(f"max epochs:{self.max_epoch}, max iterations:{self.max_iterations}")
             print(f"len dataloader:{len(self.dataloader)}")
-            self._train_baseline_new()
+            self._train_baseline()
         else:           
             batch_sampler = TwoStreamBatchSampler(self.labeled_idxs, 
                                             self.unlabeled_idxs,
                                             self.batch_size, 
                                             self.batch_size-self.labeled_bs)
             self.dataloader = DataLoader(self.dataset, batch_sampler=batch_sampler,
-                            num_workers=4, pin_memory=True)
+                            num_workers=2, pin_memory=False)
             self.max_epoch = self.max_iterations // len(self.dataloader) + 1
             if self.method_name == 'UAMT':
                 self._train_UAMT()
@@ -292,6 +346,10 @@ class SemiSupervisedTrainer:
             elif self.method_name == 'CPS':
                 self._train_CPS()
             elif self.method_name == 'C3PS':
+                self.dataloader_pl = DataLoader(self.dataset_pl, 
+                                batch_size=4, 
+                                shuffle=True, num_workers=2, 
+                                pin_memory=False)
                 if self.FP16:
                     self._train_C3PS_FP16()
                 else:
@@ -302,21 +360,28 @@ class SemiSupervisedTrainer:
                 self._train_URPC()
             elif self.method_name == 'EM':
                 self._train_EM()
+            elif self.method_name == 'ConNet':
+                self._train_ConditionNet()
+            elif self.method_name == 'McNet':
+                self._train_McNet()
             else:
-                print(f"no such method {self.method_name}")
+                print(f"no such method {self.method_name}"+"!"*10)
                 sys.exit(0)
     
-    def evaluation(self, model, do_condition=False):
+    def evaluation(self, model, do_condition=False, model_name="model"):
         print("began evaluation!")
         model.eval()
+        class_id_list = range(1, self.num_classes)
         if do_condition:
             best_performance = self.best_performance2
             model_name = "model2"
+            con_list = self.method_config['con_list']
+            class_id_list = con_list
         else:
             best_performance = self.best_performance
-            model_name = "model"
-        test_num = self.testing_data_num // 2
-        if self.current_iter % 1000==0:
+            con_list = None
+        test_num = self.testing_data_num // 1.5
+        if self.current_iter % 1000==0 or (self.method_name=='ConNet' and self.current_iter % 400==0):
             test_num = self.testing_data_num
 
         avg_metric = test_all_case_BCV(model,
@@ -328,7 +393,10 @@ class SemiSupervisedTrainer:
                                        cut_lower=self.cut_lower,
                                        do_condition=do_condition,
                                        test_num=test_num,
-                                       method=self.method_name.lower())
+                                       method=self.method_name.lower(),
+                                       con_list=con_list,
+                                       normalization=self.normalization)
+        print("avg metric shape:",avg_metric.shape)
         if avg_metric[:, 0].mean() > best_performance:
             best_performance = avg_metric[:, 0].mean()
             save_mode_path = os.path.join(self.output_folder,
@@ -353,23 +421,35 @@ class SemiSupervisedTrainer:
                 avg_metric[:, 0].mean(), 
                 model_name,
                 avg_metric[:, 1].mean()))
+        # print metric of each class
+        for i,class_id in enumerate(class_id_list):
+            class_name = self.class_name_list[class_id-1]
+            self.tensorboard_writer.add_scalar(
+                f'DSC_each_class/{model_name}_{class_name}',
+                        avg_metric[i, 0], self.current_iter
+            )
+            self.tensorboard_writer.add_scalar(
+                f'HD_each_class/{model_name}_{class_name}',
+                            avg_metric[i, 1], self.current_iter
+            )
+
         return avg_metric
 
     def _train_baseline_new(self):
         print("================> Training Baseline New<===============")
-        optimizer = torch.optim.SGD(self.network.parameters(), lr=0.01,
+        optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01,
                         momentum=0.9, weight_decay=0.0001)
         iterator = tqdm(range(self.max_epoch), ncols=70)
         for epoch_num in iterator:
             dice_loss_list = []
             ce_loss_list = []
             for i_batch, sampled_batch in enumerate(self.dataloader):
-                self.network.train()
+                self.model.train()
                 img, mask = (sampled_batch['image'], 
                                 sampled_batch['label'].long())
-                img = img.cuda()
-                mask = mask.cuda()
-                output = self.network(img)
+                img = img.to(self.device)
+                mask = mask.to(self.device)
+                output = self.model(img)
                 dice_loss = self.dice_loss2(output, mask)
             
                 #ce_loss = CE_loss(output, mask)
@@ -392,9 +472,9 @@ class SemiSupervisedTrainer:
                 if ((self.current_iter>1000 and self.current_iter % 200 == 0) or 
                     (self.current_iter<1000 and self.current_iter % 400 == 0)
                 ):
-                    self.network.eval()
+                    self.model.eval()
                     avg_metric = test_all_case_BCV(
-                        self.network,
+                        self.model,
                         test_list=self.test_list,
                         num_classes=self.num_classes,
                         patch_size=self.patch_size,
@@ -410,7 +490,7 @@ class SemiSupervisedTrainer:
                                 self.current_iter, round(self.best_performance, 4)
                             )
                         )
-                        torch.save(self.network.state_dict(), save_model_path)
+                        torch.save(self.model.state_dict(), save_model_path)
                     print(
                         f"iter:{self.current_iter},dice:{avg_metric[:, 0].mean()}"
                     )
@@ -426,13 +506,13 @@ class SemiSupervisedTrainer:
         iterator = tqdm(range(self.max_epoch), ncols=70)
         for epoch_num in iterator:
             for i_batch, sampled_batch in enumerate(self.dataloader):
-                self.network.train()
+                self.model.train()
                 volume_batch, label_batch = (sampled_batch['image'], 
                                              sampled_batch['label'].long())
                 volume_batch, label_batch = (volume_batch.to(self.device), 
                                              label_batch.to(self.device))
 
-                outputs = self.network(volume_batch)
+                outputs = self.model(volume_batch)
                 outputs_soft = torch.softmax(outputs, dim=1)
 
                 label_batch = torch.argmax(label_batch, dim=1)
@@ -468,8 +548,9 @@ class SemiSupervisedTrainer:
                                     grid_image, self.current_iter)
 
                 if (self.current_iter > self.began_eval_iter and 
-                    self.current_iter % self.val_freq == 0):
-                    self.evaluation(model=self.network)
+                    self.current_iter % self.val_freq == 0
+                ) or self.current_iter == 20:
+                    self.evaluation(model=self.model)
 
                 if self.current_iter % self.save_checkpoint_freq == 0:
                     self._save_checkpoint()
@@ -484,9 +565,11 @@ class SemiSupervisedTrainer:
 
     def _train_DAN(self):
         print("================> Training DAN <===============")
-        self.network2 = net_factory_3d(net_type="DAN", class_num=self.num_classes)
+        self.model2 = net_factory_3d(
+            net_type="DAN", class_num=self.num_classes, device=self.device
+        )
         self.optimizer2 = torch.optim.Adam(
-            self.network2.parameters(), lr=0.0001, betas=(0.9, 0.99)
+            self.model2.parameters(), lr=0.0001, betas=(0.9, 0.99)
         )
         iterator = tqdm(range(self.max_epoch), ncols=70)
         for epoch_num in iterator:
@@ -494,12 +577,14 @@ class SemiSupervisedTrainer:
                 volume_batch, label_batch = (
                     sampled_batch['image'], sampled_batch['label']
                 )
-                volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
-                DAN_target = torch.tensor([1, 0]).cuda()
-                self.network.train()
-                self.network2.eval()
+                volume_batch, label_batch = (
+                    volume_batch.to(self.device), label_batch.to(self.device)
+                )
+                DAN_target = torch.tensor([1, 0]).to(self.device)
+                self.model.train()
+                self.model2.eval()
 
-                outputs = self.network(volume_batch)
+                outputs = self.model(volume_batch)
                 outputs_soft = torch.softmax(outputs, dim=1)
 
                 label_batch = torch.argmax(label_batch, dim=1)
@@ -515,7 +600,7 @@ class SemiSupervisedTrainer:
                 self.consistency_weight = self._get_current_consistency_weight(
                     self.current_iter // 6
                 )
-                DAN_outputs = self.network2(
+                DAN_outputs = self.model2(
                     outputs_soft[self.labeled_bs:], 
                     volume_batch[self.labeled_bs:]
                 )
@@ -524,20 +609,20 @@ class SemiSupervisedTrainer:
                         DAN_outputs, (DAN_target[:self.labeled_bs]).long()
                     )
                 else:
-                    self.consistency_loss = torch.FloatTensor([0.0]).cuda()
+                    self.consistency_loss = torch.FloatTensor([0.0]).to(self.device)
                 self.loss = supervised_loss + self.consistency_weight * \
                        self.consistency_loss
                 self.optimizer.zero_grad()
                 self.loss.backward()
                 self.optimizer.step()
 
-                self.network.eval()
-                self.network2.train()
+                self.model.eval()
+                self.model2.train()
                 with torch.no_grad():
-                    outputs = self.network(volume_batch)
+                    outputs = self.model(volume_batch)
                     outputs_soft = torch.softmax(outputs, dim=1)
                 
-                DAN_outputs = self.network2(outputs_soft, volume_batch)
+                DAN_outputs = self.model2(outputs_soft, volume_batch)
                 DAN_loss = self.ce_loss(DAN_outputs, DAN_target.long())
                 self.optimizer2.zero_grad()
                 DAN_loss.backward()
@@ -569,8 +654,8 @@ class SemiSupervisedTrainer:
                 if (
                     self.current_iter > self.began_eval_iter and 
                     self.current_iter % self.val_freq == 0
-                ):
-                    self.evaluation(model=self.network)
+                ) or self.current_iter == 20:
+                    self.evaluation(model=self.model)
                 if self.current_iter % self.save_checkpoint_freq == 0:
                     self._save_checkpoint()
                 if self.current_iter >= self.max_iterations:
@@ -581,11 +666,8 @@ class SemiSupervisedTrainer:
         self.tensorboard_writer.close()
         print("Training done!")
 
-
-
     def _train_URPC(self):
         print("================> Training URPC <===============")
-        self.network = net_factory_3d(net_type='URPC', class_num=self.num_classes)
         iterator = tqdm(range(self.max_epoch), ncols=70)
         kl_distance = nn.KLDivLoss(reduction='none')
         for epoch_num in iterator:
@@ -596,7 +678,7 @@ class SemiSupervisedTrainer:
                 volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
                 label_batch = torch.argmax(label_batch, dim=1)
                 outputs_aux1, outputs_aux2, outputs_aux3, outputs_aux4 = (
-                    self.network(volume_batch)
+                    self.model(volume_batch)
                 )
                 outputs_aux1_soft = torch.softmax(outputs_aux1, dim=1)
                 outputs_aux2_soft = torch.softmax(outputs_aux2, dim=1)
@@ -754,8 +836,8 @@ class SemiSupervisedTrainer:
                 if (
                         self.current_iter > self.began_eval_iter and 
                         self.current_iter % self.val_freq ==0
-                ):
-                    self.evaluation(model=self.network)
+                ) or self.current_iter == 20:
+                    self.evaluation(model=self.model)
                 if self.current_iter % self.save_checkpoint_freq == 0:
                     self._save_checkpoint()
                 if self.current_iter >= self.max_iterations:
@@ -766,6 +848,73 @@ class SemiSupervisedTrainer:
         self.tensorboard_writer.close()
         print('Training Finished')
     
+    
+    def _train_McNet(self):
+        print("================> Training McNet <===============")
+        iterator = tqdm(range(self.max_epoch), ncols=70)
+        for epoch_num in iterator:
+            for i_batch, sampled_batch in enumerate(self.dataloader):
+                volume_batch, label_batch = (sampled_batch['image'], 
+                                             sampled_batch['label'])
+                volume_batch, label_batch = (volume_batch.to(self.device), 
+                                             label_batch.to(self.device))
+                label_batch = torch.argmax(label_batch,dim=1)
+                outputs = self.model(volume_batch)
+                num_outputs = len(outputs)
+                y_ori = torch.zeros((num_outputs,) + outputs[0].shape)
+                y_pseudo_label = torch.zeros((num_outputs,) + outputs[0].shape)
+                self.loss_ce = 0
+                self.loss_dice = 0 
+                for idx in range(num_outputs):
+                    y = outputs[idx][:self.labeled_bs,...]
+                    y_prob = torch.softmax(y, dim=1)
+                    self.loss_ce += self.ce_loss(
+                        y[:self.labeled_bs],label_batch[:self.labeled_bs]
+                    )
+                    self.loss_dice += self.dice_loss(
+                        y_prob, label_batch[:self.labeled_bs,...].unsqueeze(1)
+                    )
+
+                    y_all = outputs[idx]
+                    y_prob_all = torch.softmax(y_all, dim=1)
+                    y_ori[idx] = y_prob_all
+                    y_pseudo_label[idx] = self._sharpening(y_prob_all)
+                
+                self.consistency_loss = 0
+                if self.current_iter > self.began_semi_iter:
+                    for i in range(num_outputs):
+                        for j in range(num_outputs):
+                            if i != j:
+                                self.consistency_loss += losses.mse_loss(
+                                    y_ori[i], y_pseudo_label[j]
+                                )
+
+
+                consistency_weight = self._get_current_consistency_weight(
+                    self.current_iter//150
+                )
+                
+                self.loss = 0.5 * (self.loss_dice) + consistency_weight * self.consistency_loss
+                self.optimizer.zero_grad()
+                self.loss.backward()
+                self.optimizer.step()
+                self._adjust_learning_rate()
+                self.current_iter += 1
+                self._add_information_to_writer()
+                if (
+                    self.current_iter > self.began_eval_iter and
+                    self.current_iter % self.val_freq == 0
+                ) or self.current_iter == 20:
+                    self.evaluation(model=self.model)
+                if self.current_iter % self.save_checkpoint_freq == 0:
+                    self._save_checkpoint()
+                if self.current_iter >= self.max_iterations:
+                    break
+            if self.current_iter >= self.max_iterations:
+                iterator.close()
+                break
+        self.tensorboard_writer.close()
+                
     
     def _train_MT(self):
         print("================> Training MT <===============")
@@ -780,12 +929,12 @@ class SemiSupervisedTrainer:
                 noise = torch.clamp(torch.randn_like(
                     unlabeled_volume_batch)*0.1, -0.2, 0.2)
                 ema_inputs = unlabeled_volume_batch + noise
-                ema_inputs = ema_inputs.cuda() 
+                ema_inputs = ema_inputs.to(self.device)
 
-                outputs = self.network(volume_batch)
+                outputs = self.model(volume_batch)
                 outputs_soft = torch.softmax(outputs, dim=1)
                 with torch.no_grad():
-                    ema_output = self.ema_network(ema_inputs)
+                    ema_output = self.ema_model(ema_inputs)
                     ema_output_soft = torch.softmax(ema_output, dim=1)
                 label_batch = torch.argmax(label_batch,dim=1)
                 self.loss_ce = self.ce_loss(outputs[:self.labeled_bs],
@@ -831,9 +980,11 @@ class SemiSupervisedTrainer:
                     self.tensorboard_writer.add_image('train/Groundtruth_label',
                                                       grid_image,
                                                       self.current_iter)
-                if (self.current_iter > self.began_eval_iter and
-                    self.current_iter % self.val_freq == 0):
-                    self.evaluation(model=self.network)
+                if (
+                    self.current_iter > self.began_eval_iter and
+                    self.current_iter % self.val_freq == 0
+                ) or self.current_iter == 20:
+                    self.evaluation(model=self.model)
                 if self.current_iter % self.save_checkpoint_freq == 0:
                     self._save_checkpoint()
                 if self.current_iter >= self.max_iterations:
@@ -846,7 +997,7 @@ class SemiSupervisedTrainer:
 
     def _train_CPS(self):
         print("================> Training CPS <===============")
-        self.network2.train()
+        self.model2.train()
         iterator = tqdm(range(self.max_epoch), ncols=70)
         for epoch_num in iterator:
             for i_batch, sampled_batch in enumerate(self.dataloader):
@@ -856,14 +1007,24 @@ class SemiSupervisedTrainer:
                 volume_batch, label_batch = (
                     volume_batch.to(self.device), label_batch.to(self.device)
                 )
-                outputs1 = self.network(volume_batch)
+                noise1 = torch.clamp(
+                    torch.randn_like(volume_batch) * 0.1, 
+                    -0.2, 
+                    0.2
+                )
+                label_batch = torch.argmax(label_batch, dim=1)
+                outputs1 = self.model(volume_batch + noise1)
                 outputs_soft1 = torch.softmax(outputs1, dim=1)
-
-                outputs2 = self.network2(volume_batch)
+                noise2 = torch.clamp(
+                    torch.randn_like(volume_batch) * 0.1, 
+                    -0.2, 
+                    0.2
+                )
+                outputs2 = self.model2(volume_batch + noise2)
                 outputs_soft2 = torch.softmax(outputs2, dim=1)
 
                 self.consistency_weight = self._get_current_consistency_weight(
-                    self.current_iter//4
+                    self.current_iter//150
                 )
                 loss1 = 0.5 * (self.ce_loss(outputs1[:self.labeled_bs],
                                    label_batch[:][:self.labeled_bs].long()) + 
@@ -906,7 +1067,8 @@ class SemiSupervisedTrainer:
                 loss.backward()
                 self.optimizer.step()
                 self.optimizer2.step()
-
+                
+                self._adjust_learning_rate()
                 self.current_iter += 1
 
                 self.tensorboard_writer.add_scalar('lr', self.current_lr, 
@@ -949,24 +1111,26 @@ class SemiSupervisedTrainer:
                     self.tensorboard_writer.add_image('train/Groundtruth_label',
                                  grid_image, self.current_iter)
 
-                if (self.current_iter > self.began_eval_iter and
-                    self.current_iter % self.val_freq == 0):
-                    self.evaluation(model=self.network)
-                    self.evaluation(model=self.network2)
-                    self.network.train()
-                    self.network2.train()
+                if (
+                    self.current_iter > self.began_eval_iter and
+                    self.current_iter % self.val_freq == 0
+                ) or self.current_iter==20:
+                    self.evaluation(model=self.model)
+                    self.evaluation(model=self.model2,model_name='model2')
+                    self.model.train()
+                    self.model2.train()
             
                 if self.current_iter % self.save_checkpoint_freq == 0:
                     save_mode_path = os.path.join(
                     self.output_folder, 'model1_iter_' + \
                         str(self.current_iter) + '.pth')
-                    torch.save(self.network.state_dict(), save_mode_path)
+                    torch.save(self.model.state_dict(), save_mode_path)
                     self.logging.info("save model1 to {}".format(save_mode_path))
 
                     save_mode_path = os.path.join(
                         self.output_folder, 
                         'model2_iter_' + str(self.current_iter) + '.pth')
-                    torch.save(self.network2.state_dict(), save_mode_path)
+                    torch.save(self.model2.state_dict(), save_mode_path)
                     self.logging.info("save model2 to {}".format(save_mode_path))
                 if self.current_iter >= self.max_iterations:
                     break 
@@ -977,7 +1141,7 @@ class SemiSupervisedTrainer:
 
     def _train_C3PS_FP16(self):
         print("================> Training C3PS FP16<===============")
-        self.network2.train()
+        self.model2.train()
         iterator = tqdm(range(self.max_epoch), ncols=70)
         iter_each_epoch = len(self.dataloader)
         for epoch_num in iterator:
@@ -1030,10 +1194,10 @@ class SemiSupervisedTrainer:
                     )
                 
                 with amp.autocast():
-                    outputs1 = self.network(volume_batch)
+                    outputs1 = self.model(volume_batch)
                     outputs_soft1 = torch.softmax(outputs1, dim=1)
 
-                    outputs2 = self.network2(volume_batch, condition_batch)
+                    outputs2 = self.model2(volume_batch, condition_batch)
                     outputs_soft2 = torch.softmax(outputs2, dim=1)
                     label_batch_con = (
                         label_batch==condition_batch.unsqueeze(-1).unsqueeze(-1)
@@ -1306,23 +1470,23 @@ class SemiSupervisedTrainer:
                 if (self.current_iter > self.began_eval_iter and
                     self.current_iter % self.val_freq == 0
                 ):
-                    self.evaluation(model=self.network)
-                    self.evaluation(model=self.network2, do_condition=True)
-                    self.network.train()
-                    self.network2.train()
+                    self.evaluation(model=self.model)
+                    self.evaluation(model=self.model2, do_condition=True)
+                    self.model.train()
+                    self.model2.train()
                 if self.current_iter % self.save_checkpoint_freq == 0:
                     save_model_path = os.path.join(
                         self.output_folder,
                         'model_iter_' + str(self.current_iter) + '.pth'
                     )
-                    torch.save(self.network.state_dict(), save_model_path)
+                    torch.save(self.model.state_dict(), save_model_path)
                     self.logging.info(f"save model to {save_model_path}")
 
                     save_model_path = os.path.join(
                         self.output_folder,
                         'model2_iter_' + str(self.current_iter) + '.pth'
                     )
-                    torch.save(self.network2.state_dict(), save_model_path)
+                    torch.save(self.model2.state_dict(), save_model_path)
                     self.logging.info(f'save model2 to {save_model_path}')
                 if self.current_iter >= self.max_iterations:
                     break
@@ -1332,29 +1496,42 @@ class SemiSupervisedTrainer:
         self.tensorboard_writer.close()
 
 
-    def _train_C3PS(self):
-        print("================> Training C3PS<===============")
+
+    def _get_condition(self, pred_con_list):
+        """
+        get conditon number for conditional network
+        """
+        if 0 in pred_con_list:
+            pred_con_list.remove(0)
+        inter_label_list = list(
+            set(pred_con_list) & set(self.method_config['con_list'])
+        )
+        if len(inter_label_list) == 0:
+            inter_label_list = self.method_config['con_list']
+        con = np.random.choice(inter_label_list)
+        return con
         
+    def _train_C3PS(self):
+        print("================> Training C3PS<===============")   
         iterator = tqdm(range(self.max_epoch), ncols=70)
         iter_each_epoch = len(self.dataloader)
         for epoch_num in iterator:
             for i_batch, sampled_batch in enumerate(self.dataloader):
-                self.network.train()
-                self.network2.train()
+                self._adjust_learning_rate()  
+                self.model.train()
+                self.model2.train()
                 volume_batch, label_batch = (
                     sampled_batch['image'],sampled_batch['label']
                 )
                 volume_batch, label_batch = (volume_batch.to(self.device), 
                                              label_batch.to(self.device))
                 
-                                    #prepare input for condition net
-                condition_batch = sampled_batch['condition'].type(torch.half)
-                if self.use_CAC:
-                    condition_batch = torch.cat(
-                        [condition_batch, condition_batch],
-                        dim=0
-                    )
-                    condition_batch = condition_batch.to(self.device)
+                #prepare input for condition net
+                condition_batch = sampled_batch['condition']
+                condition_batch = torch.cat([
+                        condition_batch[:,0],
+                        condition_batch[:,1]
+                    ],dim=0).unsqueeze(1).to(self.device)
                 ul1, br1, ul2, br2 = [], [], [], []
                 labeled_idxs_batch = torch.arange(0, self.labeled_bs)
                 unlabeled_idx_batch = torch.arange(self.labeled_bs, 
@@ -1387,45 +1564,23 @@ class SemiSupervisedTrainer:
                     unlabeled_idxs_batch = torch.cat(
                         [unlabeled_idxs1_batch,unlabeled_idxs2_batch]
                     )
-                
-                outputs1 = self.network(volume_batch)
+                noise1 = torch.clamp(
+                    torch.randn_like(volume_batch) * 0.1, 
+                    -0.2, 
+                    0.2
+                ).to(self.device)
+                outputs1 = self.model(volume_batch + noise1)
                 outputs_soft1 = torch.softmax(outputs1, dim=1)
-
-                outputs2 = self.network2(volume_batch, condition_batch)
-                outputs_soft2 = torch.softmax(outputs2, dim=1)
-                label_batch_con = (
-                    label_batch==condition_batch.unsqueeze(-1).unsqueeze(-1)
-                ).long()
-
-                self.consistency_weight = self._get_current_consistency_weight(
-                    self.current_iter//4
-                )
-                loss1 = 0.5 * (
-                    self.ce_loss(
-                        outputs1[labeled_idxs_batch],
-                        label_batch[labeled_idxs_batch].long()
-                    ) +
-                    self.dice_loss(
-                        outputs_soft1[labeled_idxs_batch],
-                        label_batch[labeled_idxs_batch].unsqueeze(1)
+                
+                #get condition list:
+                if self.use_CAC and (
+                    self.current_iter >= min(
+                        self.began_semi_iter,self.began_condition_iter
                     )
-                )
-                loss2 = 0.5 * (
-                    self.ce_loss(
-                        outputs2[labeled_idxs_batch],
-                        label_batch_con[labeled_idxs_batch].long()
-                    ) + 
-                    self.dice_loss_con(
-                        outputs_soft2[labeled_idxs_batch],
-                        label_batch_con[labeled_idxs_batch].unsqueeze(1)
-                    )
-                )
-
-                if self.use_CAC:
+                ):
                     overlap_soft1_list = []
-                    overlap_soft2_list = []
                     overlap_outputs1_list = []
-                    overlap_outputs2_list = []
+                    overlap_filter1_list = []
                     for unlabeled_idx1, unlabeled_idx2 in zip(
                         unlabeled_idxs1_batch,
                         unlabeled_idxs2_batch
@@ -1468,7 +1623,85 @@ class SemiSupervisedTrainer:
                         )
                         overlap_outputs1_list.append(overlap1_outputs1.unsqueeze(0))
                         overlap_outputs1_list.append(overlap2_outputs1.unsqueeze(0))
+                        
+                        overlap_soft1_tmp = (overlap1_soft1 + overlap2_soft1) / 2.
+                        max1,pseudo_mask1 = torch.max(overlap_soft1_tmp, dim=0)
+                        pred_con_list = pseudo_mask1.unique().tolist()
+                        con = self._get_condition(pred_con_list)
+                        if self.num_classes==2:  #如果类别数为2则可以利用到背景像素
+                            overlap_filter1_tmp = (
+                                (((max1>self.model1_thresh)&(pseudo_mask1!=con))|
+                                ((max1>0.8)&(pseudo_mask1==con))
+                                )
+                            ).type(torch.int16)
+                        else:
+                            overlap_filter1_tmp = (
+                                (((max1>0.98)&(pseudo_mask1==0))|
+                                 ((max1>0.9)&(pseudo_mask1!=con)&(pseudo_mask1!=0))|
+                                ((max1>0.9)&(pseudo_mask1==con))
+                                )
+                            ).type(torch.int16)
+                        
+                        overlap_soft1_list.append(overlap_soft1_tmp.unsqueeze(0))
+                        overlap_filter1_list.append(overlap_filter1_tmp.unsqueeze(0))
+                    overlap_soft1 = torch.cat(overlap_soft1_list, 0)
+                    overlap_outputs1 = torch.cat(overlap_outputs1_list, 0)
+                    overlap_filter1 = torch.cat(overlap_filter1_list, 0)
 
+                
+                
+                    #get condition list pred by model1
+                    condition_batch[unlabeled_idxs_batch] = con
+                
+                # random noise add to input of model2
+                noise2 = torch.clamp(
+                    torch.randn_like(volume_batch) * 0.1, 
+                    -0.2, 
+                    0.2
+                ).to(self.device)
+
+                outputs2 = self.model2(volume_batch+noise2, condition_batch)
+                outputs_soft2 = torch.softmax(outputs2, dim=1)
+                label_batch_con = (
+                    label_batch==condition_batch.unsqueeze(-1).unsqueeze(-1)
+                ).long()
+
+                self.consistency_weight = self._get_current_consistency_weight(
+                    self.current_iter//150
+                )
+                loss1 = 0.5 * (
+                    self.ce_loss(
+                        outputs1[labeled_idxs_batch],
+                        label_batch[labeled_idxs_batch].long()
+                    ) +
+                    self.dice_loss(
+                        outputs_soft1[labeled_idxs_batch],
+                        label_batch[labeled_idxs_batch].unsqueeze(1)
+                    )
+                )
+                loss2 = 0.5 * (
+                    self.ce_loss(
+                        outputs2[labeled_idxs_batch],
+                        label_batch_con[labeled_idxs_batch].long()
+                    ) + 
+                    self.dice_loss_con(
+                        outputs_soft2[labeled_idxs_batch],
+                        label_batch_con[labeled_idxs_batch].unsqueeze(1)
+                    )
+                )
+
+                if self.use_CAC and (
+                    self.current_iter >= min(
+                        self.began_semi_iter,self.began_condition_iter
+                    )
+                ):
+                    overlap_soft2_list = []
+                    overlap_outputs2_list = []
+                    overlap_filter2_list = []
+                    for unlabeled_idx1, unlabeled_idx2 in zip(
+                        unlabeled_idxs1_batch,
+                        unlabeled_idxs2_batch
+                    ):
                         # overlap region pred by model2
                         overlap1_soft2 = outputs_soft2[
                             unlabeled_idx1,
@@ -1509,15 +1742,24 @@ class SemiSupervisedTrainer:
                         overlap_outputs2_list.append(overlap1_outputs2.unsqueeze(0))
                         overlap_outputs2_list.append(overlap2_outputs2.unsqueeze(0))
 
-                        # merge overlap region pred
-                        overlap_soft1_tmp = (overlap1_soft1 + overlap2_soft1) / 2.
+                        
                         overlap_soft2_tmp = (overlap1_soft2 + overlap2_soft2) / 2.
-                        overlap_soft1_list.append(overlap_soft1_tmp.unsqueeze(0))
+                        max2,pseudo_mask2 = torch.max(overlap_soft2_tmp, dim=0)
+                        if self.num_classes==2:
+                            overlap_filter2_tmp = ((
+                                max2>self.model2_thresh
+                            )).type(torch.int16)
+                        else:
+                            overlap_filter2_tmp = ((
+                                max2>self.model2_thresh
+                            ) & (
+                                pseudo_mask2>0
+                            )).type(torch.int16)
                         overlap_soft2_list.append(overlap_soft2_tmp.unsqueeze(0))
-                    overlap_soft1 = torch.cat(overlap_soft1_list, 0)
+                        overlap_filter2_list.append(overlap_filter2_tmp.unsqueeze(0))
                     overlap_soft2 = torch.cat(overlap_soft2_list, 0)
-                    overlap_outputs1 = torch.cat(overlap_outputs1_list, 0)
                     overlap_outputs2 = torch.cat(overlap_outputs2_list, 0)
+                    overlap_filter2 = torch.cat(overlap_filter2_list, 0)
                 if self.current_iter < self.began_condition_iter:
                     pseudo_supervision1 = torch.FloatTensor([0]).to(self.device)
                 else:
@@ -1527,14 +1769,35 @@ class SemiSupervisedTrainer:
                             dim=1,
                             keepdim=False
                         )
-                        overlap_pseudo_outputs2 = torch.cat(
-                            [overlap_pseudo_outputs2, overlap_pseudo_outputs2]
-                        )
-                        pseudo_supervision1 = self._cross_entropy_loss_con(
-                            overlap_outputs1,
-                            overlap_pseudo_outputs2,
-                            condition_batch[unlabeled_idx_batch]
-                        )
+                        if overlap_pseudo_outputs2.sum() == 0 or overlap_filter2.sum()==0:
+                            pseudo_supervision1 = torch.FloatTensor([0]).to(self.device)
+                        else:
+                            overlap_pseudo_outputs2 = torch.cat(
+                                [overlap_pseudo_outputs2, overlap_pseudo_outputs2]
+                            )
+                            overlap_pseudo_filter2 = torch.cat(
+                                [overlap_filter2, overlap_filter2]
+                            )
+                            ce_pseudo_supervision1 = self._cross_entropy_loss_con(
+                                overlap_outputs1,
+                                overlap_pseudo_outputs2,
+                                condition_batch[unlabeled_idx_batch],
+                                overlap_pseudo_filter2
+                            )
+                            B,C,D,W,H = overlap_outputs1.shape
+                            overlap_soft1_con = torch.softmax(overlap_outputs1,dim=1)
+                            overlap_outputs_con = torch.zeros(B,2,D,W,H)
+                            overlap_outputs_con[:,1,:,:,:] = overlap_soft1_con[
+                                :,condition_batch[unlabeled_idx_batch].item(),:,:,:
+                            ]
+                            overlap_outputs_con[:,0,:,:,:] = 1 - overlap_outputs_con[:,1,:,:,:]
+                            overlap_outputs_con[:,1,:,:,:][overlap_pseudo_filter2==0]=0 # filer output
+                            dice_pseudo_supervision1 = self.dice_loss_con(
+                                overlap_outputs_con.to(self.device),
+                                (overlap_pseudo_outputs2*overlap_pseudo_filter2).unsqueeze(1),
+                                skip_id=0
+                            )
+                            pseudo_supervision1 = ce_pseudo_supervision1 
                     else:
                         pseudo_outputs2 = torch.argmax(
                             outputs_soft2[self.labeled_bs:].detach(),
@@ -1546,7 +1809,7 @@ class SemiSupervisedTrainer:
                             pseudo_outputs2,
                             condition_batch[self.labeled_bs:]
                         )
-                if self.current_iter < self.began_semi_iter:
+                if self.current_iter < self.began_semi_iter or overlap_filter1.sum()==0:
                     pseudo_supervision2 = torch.FloatTensor([0]).to(self.device)
                 else:
                     if self.use_CAC:
@@ -1558,12 +1821,25 @@ class SemiSupervisedTrainer:
                         overlap_pseudo_outputs1 = torch.cat(
                             [overlap_pseudo_outputs1, overlap_pseudo_outputs1]
                         )
-                        pseudo_supervision2 = self.ce_loss(
-                            overlap_outputs2, 
-                            (
+                        overlap_pseudo_filter1 = torch.cat(
+                            [overlap_filter1, overlap_filter1]
+                        )
+                        target_ce_con = (
                                 overlap_pseudo_outputs1==condition_batch[unlabeled_idxs_batch].unsqueeze(-1).unsqueeze(-1)
-                            ).long()
-                        ) 
+                        ).long()
+                        target_ce_con[overlap_pseudo_filter1==0] = 255
+                        ce_pseudo_supervision2 = self.ce_loss(
+                            overlap_outputs2, 
+                            target_ce_con
+                        )
+                        dice_pseudo_supervision2 = self.dice_loss_con(
+                            torch.softmax(overlap_outputs2,dim=1)*overlap_pseudo_filter1,
+                            ((
+                                overlap_pseudo_outputs1==condition_batch[unlabeled_idxs_batch].unsqueeze(-1).unsqueeze(-1)
+                            ).long()*overlap_pseudo_filter1).unsqueeze(1),
+                            skip_id=0
+                        )
+                        pseudo_supervision2 = ce_pseudo_supervision2 
                     else:
                         pseudo_outputs1 = torch.argmax(
                             outputs_soft1[self.labeled_bs:].detach(), 
@@ -1590,7 +1866,6 @@ class SemiSupervisedTrainer:
                 self.optimizer2.step()
 
                 self.current_iter += 1
-                self._adjust_learning_rate()  
                 for param_group in self.optimizer.param_groups:
                     self.current_lr = param_group['lr']
                 self.tensorboard_writer.add_scalar('lr', self.current_lr, 
@@ -1660,25 +1935,247 @@ class SemiSupervisedTrainer:
                                                       self.current_iter)
                 if (self.current_iter > self.began_eval_iter and
                     self.current_iter % self.val_freq == 0
-                ):
+                ) or self.current_iter == 20:
                     with torch.no_grad():
-                        self.evaluation(model=self.network)
-                        self.evaluation(model=self.network2, do_condition=True)
-                    self.network.train()
-                    self.network2.train()
+                        self.evaluation(model=self.model)
+                        self.evaluation(model=self.model2, do_condition=True)
+                    self.model.train()
+                    self.model2.train()
                 if self.current_iter % self.save_checkpoint_freq == 0:
                     save_model_path = os.path.join(
                         self.output_folder,
                         'model_iter_' + str(self.current_iter) + '.pth'
                     )
-                    torch.save(self.network.state_dict(), save_model_path)
+                    torch.save(self.model.state_dict(), save_model_path)
                     self.logging.info(f"save model to {save_model_path}")
 
                     save_model_path = os.path.join(
                         self.output_folder,
                         'model2_iter_' + str(self.current_iter) + '.pth'
                     )
-                    torch.save(self.network2.state_dict(), save_model_path)
+                    torch.save(self.model2.state_dict(), save_model_path)
+                    self.logging.info(f'save model2 to {save_model_path}')
+                if self.current_iter >= self.max_iterations:
+                    break
+            if self.current_iter >= self.max_iterations:
+                iterator.close()
+                break
+
+            # train network2 for partial dataset
+            if self.use_PL:
+                full_volume_batch = volume_batch[labeled_idxs_batch]
+                full_label_batch = label_batch[labeled_idxs_batch]
+                full_condition_batch = condition_batch[labeled_idxs_batch]
+                con_list1 = full_label_batch[0].unique().tolist()
+                con_list2 = full_label_batch[1].unique().tolist()
+                if 0 in con_list1:
+                    con_list1.remove(0)
+                inter_label_list = list(
+                    set(con_list1) & set(self.method_config['con_list'])
+                )
+                if len(inter_label_list) == 0:
+                    inter_label_list = self.method_config['con_list']
+                con1 = np.random.choice(inter_label_list)
+
+                if 0 in con_list2:
+                    con_list2.remove(0)
+                inter_label_list = list(
+                    set(con_list2) & set(self.method_config['con_list'])
+                )
+                if len(inter_label_list) == 0:
+                    inter_label_list = self.method_config['con_list']
+                con2 = np.random.choice(inter_label_list)
+                full_condition_batch[0] = con1 
+                full_condition_batch[1] = con2
+                for i_batch, sampled_batch in enumerate(self.dataloader_pl):
+                    self.model2.train()
+                    volume_batch, label_batch = (
+                        sampled_batch['image'],sampled_batch['label']
+                    )
+                    label_batch = torch.argmax(label_batch, dim=1)
+                    volume_batch, label_batch = (volume_batch.to(self.device), 
+                                    label_batch.to(self.device))
+                    condition_batch = torch.cat([
+                            torch.Tensor([5]),
+                            torch.Tensor([5]),
+                            torch.Tensor([5]),
+                            torch.Tensor([5]),
+                        ],dim=0).unsqueeze(1).to(self.device)
+                    
+                    # volume_batch = torch.cat(
+                    #     [full_volume_batch, volume_batch], 
+                    #     dim=0
+                    # )
+                    # label_batch = torch.cat(
+                    #     [full_label_batch, label_batch],
+                    #     dim=0
+                    # )
+                    # condition_batch = torch.cat(
+                    #     [full_condition_batch, condition_batch],
+                    #     dim=0
+                    # )
+                    
+              
+                    noise = torch.clamp(
+                        torch.randn_like(volume_batch) * 0.1, 
+                        -0.2, 
+                        0.2
+                    ).to(self.device)
+
+                    outputs2 = self.model2(volume_batch+noise, condition_batch)
+                    outputs_soft2 = torch.softmax(outputs2, dim=1)
+                    
+                    # get condition label of 0 vs 1
+                    # condition_batch[2:] = 1 # since partial label is binary mask
+                    # label_batch_con = (
+                    #     label_batch==condition_batch.unsqueeze(-1).unsqueeze(-1)
+                    # ).long()     
+                    loss2 = 0.1 * (
+                        self.ce_loss(
+                            outputs2,
+                            label_batch
+                        ) + 
+                        self.dice_loss_con(
+                            outputs_soft2,
+                            label_batch.unsqueeze(1)
+                        )
+                    )
+                    model2_loss = loss2 
+                    self.optimizer2.zero_grad() 
+                    model2_loss.backward()
+                    self.optimizer2.step()
+
+                    self.tensorboard_writer.add_scalar('loss/model2_loss_pl', 
+                                                    model2_loss, 
+                                                    self.current_iter)
+
+                    self.logging.info(
+                        'iteration %d :'
+                        'model2 loss pl : %f' % (
+                            self.current_iter,
+                            model2_loss.item()
+                        )
+                    )
+                    break
+        self.tensorboard_writer.close()
+
+    def _train_ConditionNet(self):
+        print("================> Training ConditionNet<===============")   
+        iterator = tqdm(range(self.max_epoch), ncols=70)
+        iter_each_epoch = len(self.dataloader)
+        for epoch_num in iterator:
+            for i_batch, sampled_batch in enumerate(self.dataloader):
+                self.model2.train()
+                volume_batch, label_batch = (
+                    sampled_batch['image'],sampled_batch['label']
+                )
+                volume_batch, label_batch = (volume_batch.to(self.device), 
+                                             label_batch.to(self.device))
+                
+                                    #prepare input for condition net
+                condition_batch = sampled_batch['condition']
+                condition_batch = torch.cat([
+                        condition_batch[0],
+                        condition_batch[1]
+                    ],dim=0).unsqueeze(1).cuda()
+                labeled_idxs_batch = torch.arange(0, self.labeled_bs)
+                if self.use_CAC:
+                    volume_batch = torch.cat(
+                        [volume_batch[:,0,...],volume_batch[:,1,...]],
+                        dim=0
+                    )
+                    label_batch = torch.cat(
+                        [label_batch[:,0,...],label_batch[:,1,...]],
+                        dim=0
+                    )
+                    labeled_idxs2_batch = torch.arange(
+                        self.batch_size,
+                        self.batch_size+self.labeled_bs
+                    )
+                    labeled_idxs1_batch = torch.arange(0,self.labeled_bs)
+                    labeled_idxs_batch = torch.cat(
+                        [labeled_idxs1_batch,labeled_idxs2_batch]
+                    )
+                noise = torch.clamp(
+                    torch.randn_like(volume_batch) * 0.1, 
+                    -0.2, 
+                    0.2
+                ).to(self.device)
+
+                outputs2 = self.model2(volume_batch+noise, condition_batch)
+                outputs_soft2 = torch.softmax(outputs2, dim=1)
+                label_batch_con = (
+                    label_batch==condition_batch.unsqueeze(-1).unsqueeze(-1)
+                ).long()
+                loss2 = 0.5 * (
+                    self.ce_loss(
+                        outputs2[labeled_idxs_batch],
+                        label_batch_con[labeled_idxs_batch].long()
+                    ) + 
+                    self.dice_loss_con(
+                        outputs_soft2[labeled_idxs_batch],
+                        label_batch_con[labeled_idxs_batch].unsqueeze(1)
+                    )
+                )
+
+
+                model2_loss = loss2 
+
+                self.optimizer2.zero_grad() 
+                model2_loss.backward()
+                self.optimizer2.step()
+
+                self.current_iter += 1
+                self._adjust_learning_rate()  
+                for param_group in self.optimizer2.param_groups:
+                    self.current_lr = param_group['lr']
+                self.tensorboard_writer.add_scalar('lr', self.current_lr, 
+                                                   self.current_iter)
+                self.tensorboard_writer.add_scalar('loss/model2_loss', 
+                                                   model2_loss, 
+                                                   self.current_iter)
+
+                self.logging.info(
+                    'iteration %d :'
+                    'model2 loss : %f' % (
+                        self.current_iter,
+                        model2_loss.item()
+                    )
+                )
+                if self.current_iter % self.show_img_freq == 0:
+                    image = volume_batch[0, 0:1, :, :, 20:61:10].permute(
+                        3, 0, 1, 2).repeat(1, 3, 1, 1)
+                    grid_image = make_grid(image, 5, normalize=True)
+                    self.tensorboard_writer.add_image('train/Image', grid_image, 
+                                                      self.current_iter)
+
+                    image = outputs_soft2[0, 0:1, :, :, 20:61:10].permute(
+                        3, 0, 1, 2).repeat(1, 3, 1, 1)
+                    grid_image = make_grid(image, 5, normalize=False)
+                    self.tensorboard_writer.add_image(
+                        'train/Model2_Predicted_label',
+                        grid_image, 
+                        self.current_iter
+                    )
+
+                    image = label_batch[0, :, :, 20:61:10].unsqueeze(0).permute(
+                        3, 0, 1, 2).repeat(1, 3, 1, 1)
+                    grid_image = make_grid(image, 5, normalize=False)
+                    self.tensorboard_writer.add_image('train/Groundtruth_label',
+                                                      grid_image, 
+                                                      self.current_iter)
+                if (self.current_iter > self.began_eval_iter and
+                    self.current_iter % self.val_freq == 0
+                ) or self.current_iter == 20:
+                    with torch.no_grad():
+                        self.evaluation(model=self.model2, do_condition=True)
+                    self.model2.train()
+                if self.current_iter % self.save_checkpoint_freq == 0:
+                    save_model_path = os.path.join(
+                        self.output_folder,
+                        'model2_iter_' + str(self.current_iter) + '.pth'
+                    )
+                    torch.save(self.model2.state_dict(), save_model_path)
                     self.logging.info(f'save model2 to {save_model_path}')
                 if self.current_iter >= self.max_iterations:
                     break
@@ -1686,7 +2183,7 @@ class SemiSupervisedTrainer:
                 iterator.close()
                 break
         self.tensorboard_writer.close()
-
+    
     def _train_EM(self):
         pass
 
@@ -1700,18 +2197,18 @@ class SemiSupervisedTrainer:
                 volume_batch, label_batch = (volume_batch.to(self.device), 
                                              label_batch.to(self.device))
                 unlabeled_volume_batch = volume_batch[self.labeled_bs:]
-
-                
+              
                 label_batch = torch.argmax(label_batch, dim=1)
                 noise = torch.clamp(torch.randn_like(
                     unlabeled_volume_batch)*0.1, -0.2, 0.2
                 )
                 ema_inputs = unlabeled_volume_batch + noise 
+                ema_inputs = ema_inputs.to(self.device)
 
-                outputs = self.network(volume_batch)
+                outputs = self.model(volume_batch)
                 outputs_soft = torch.softmax(outputs, dim=1)
                 with torch.no_grad():
-                    ema_output = self.ema_network(ema_inputs)
+                    ema_output = self.ema_model(ema_inputs)
                 T = 8
                 _, _, d, w, h = unlabeled_volume_batch.shape
                 volume_batch_r = unlabeled_volume_batch.repeat(2, 1, 1, 1, 1)
@@ -1722,7 +2219,7 @@ class SemiSupervisedTrainer:
                     ema_inputs = volume_batch_r + torch.clamp(torch.randn_like(
                         volume_batch_r)*0.1, -0.2, 0.2)
                     with torch.no_grad():
-                        preds[2*stride*i:2*stride*(i+1)] = self.ema_network(
+                        preds[2*stride*i:2*stride*(i+1)] = self.ema_model(
                             ema_inputs)
                 preds = torch.softmax(preds, dim=1)
                 preds = preds.reshape(T, stride, self.num_classes, d, w, h)
@@ -1735,17 +2232,19 @@ class SemiSupervisedTrainer:
                                            label_batch[:self.labeled_bs].unsqueeze(1))
                 supervised_loss = 0.5 * (self.loss_dice + self.loss_ce)
                 self.consistency_weight = (
-                    self._get_current_consistency_weight(self.current_iter//4)
+                    self._get_current_consistency_weight(self.current_iter//150)
                 )
                 consistency_dist = losses.softmax_dice_loss(
                     outputs[self.labeled_bs:], ema_output)
-                if self.current_iter > self.began_semi_iter:
-                    mask = (uncertainty < threshold).float()
-                    self.consistency_loss = torch.sum(mask*consistency_dist)/(
-                        2*torch.sum(mask)+1e-16
-                    )
-                else:
-                    self.consistency_loss = torch.FloatTensor([0.0]).to(self.device)
+                threshold = (0.75+0.25*ramps.sigmoid_rampup(self.current_iter,
+                self.max_iterations))*np.log(2)
+                #if self.current_iter > self.began_semi_iter:
+                mask = (uncertainty < threshold).float()
+                self.consistency_loss = torch.sum(mask*consistency_dist)/(
+                    2*torch.sum(mask)+1e-16
+                )
+                # else:
+                #     self.consistency_loss = torch.FloatTensor([0.0]).to(self.device)
                 self.loss = supervised_loss + \
                     self.consistency_weight * self.consistency_loss
                 self.optimizer.zero_grad()
@@ -1774,8 +2273,9 @@ class SemiSupervisedTrainer:
                                                       grid_image,
                                                       self.current_iter)
                 if (self.current_iter > self.began_eval_iter and
-                    self.current_iter % self.val_freq == 0):
-                    self.evaluation(model=self.network)
+                    self.current_iter % self.val_freq == 0
+                ) or self.current_iter==20:
+                    self.evaluation(model=self.model)
                 if self.current_iter % self.save_checkpoint_freq == 0:
                     self._save_checkpoint()
                 if self.current_iter >= self.max_iterations:
@@ -1795,8 +2295,8 @@ class SemiSupervisedTrainer:
     def _update_ema_variables(self):
         # use the true average until the exponential average is more correct
         alpha = min(1-1/(self.current_iter + 1), self.ema_decay)
-        for ema_param, param in zip(self.ema_network.parameters(),
-                                    self.network.parameters()):
+        for ema_param, param in zip(self.ema_model.parameters(),
+                                    self.model.parameters()):
             ema_param.data.mul_(alpha).add_(1-alpha, param.data)
     
     def _worker_init_fn(self, worker_id):
@@ -1805,7 +2305,7 @@ class SemiSupervisedTrainer:
     def _save_checkpoint(self):
         save_checkpoint_path = os.path.join(
             self.output_folder, 'iter_' + str(self.current_iter)+ '.pth')
-        torch.save(self.network.state_dict(), save_checkpoint_path)
+        torch.save(self.model.state_dict(), save_checkpoint_path)
         self.logging.info(f'save model to {save_checkpoint_path}')
     
     def _load_checkpoint(self):
@@ -1813,7 +2313,7 @@ class SemiSupervisedTrainer:
     
 
     def _kaiming_normal_init_weight(self):
-        for m in self.network2.modules():
+        for m in self.model2.modules():
             if isinstance(m, nn.Conv3d):
                 torch.nn.init.kaiming_normal_(m.weight)
             elif isinstance(m, nn.BatchNorm3d):
@@ -1822,13 +2322,14 @@ class SemiSupervisedTrainer:
 
 
     def _xavier_normal_init_weight(self):
-        for m in self.network.modules():
+        for m in self.model.modules():
             if isinstance(m, nn.Conv3d):
                 torch.nn.init.xavier_normal_(m.weight)
             elif isinstance(m, nn.BatchNorm3d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
-    def _cross_entropy_loss_con(self, output, target, condition):
+    
+    def _cross_entropy_loss_con(self, output, target, condition, filter):
         """
         cross entropy loss for conditional network
         """
@@ -1838,22 +2339,29 @@ class SemiSupervisedTrainer:
         softmax_con[:,1,...] = softmax[np.arange(B),condition.squeeze().long(),...] 
         softmax_con[:,0,...] = 1.0 - softmax_con[:,1,...]
         log = -torch.log(softmax_con.gather(1, target.unsqueeze(1)) + 1e-7)
-        loss = log.mean()
+        #loss = log.mean()
+        loss = (log*filter.unsqueeze(1)).sum()/filter.sum() # with filter
         return loss
 
     def _adjust_learning_rate(self):
-        if self.optimizer_type == 'Adam':
-            return    # no need to adjust learning rate for adam optimizer   
-        print("current learning rate: ",self.current_lr)
-        self.current_lr = self.initial_lr * (
-            1.0 - self.current_iter / self.max_iterations
-        ) ** 0.9
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = self.current_lr
-        
-        if self.method_name in ['CPS','C3PS']:
-            for param_group in self.optimizer2.param_groups:
+        if self.optimizer_type == 'SGD': # no need to adjust learning rate for adam optimizer   
+            print("current learning rate: ",self.current_lr)
+            self.current_lr = self.initial_lr * (
+                1.0 - self.current_iter / self.max_iterations
+            ) ** 0.9
+            for param_group in self.optimizer.param_groups:
                 param_group['lr'] = self.current_lr
+        
+        if (
+            self.method_name in ['CPS','C3PS','ConNet'] and
+            self.optimizer2_type == 'SGD'
+        ):
+                print("current learning rate model2: ",self.current_lr)
+                self.current2_lr = self.initial2_lr * (
+                1.0 - self.current_iter / self.max_iterations
+                ) ** 0.9
+                for param_group in self.optimizer2.param_groups:
+                    param_group['lr'] = self.current2_lr
     
     def _add_information_to_writer(self):
         for param_group in self.optimizer.param_groups:
@@ -1887,6 +2395,11 @@ class SemiSupervisedTrainer:
             tensor_list.append(temp_prob)
         output_tensor = torch.cat(tensor_list, dim=1)
         return output_tensor.float()
+
+    def _sharpening(self, P):
+        T = 1/0.1
+        P_sharpen = P ** T / (P ** T + (1-P) ** T)
+        return P_sharpen
 
     
 
