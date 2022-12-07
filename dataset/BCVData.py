@@ -158,7 +158,8 @@ class BCVDatasetCAC(dataset):
                 cutout=False, rotate_trans=False, scale_trans=False,
                 random_rotflip=False,
                 num_class=2, edge_prob=0., upper=200, lower=-68, 
-                stride=8, iou_bound=[0.25,0.95], con_list=None, weights=None):
+                stride=8, iou_bound=[0.25,0.95], con_list=None, 
+                addi_con_list=None, weights=None):
         self.patch_size = patch_size
         self.cutout = cutout
         self.rotate_trans = rotate_trans
@@ -175,6 +176,7 @@ class BCVDatasetCAC(dataset):
             self.con_list = con_list 
         else:
             self.con_list = range(1, self.num_class)
+        self.addi_con_list = addi_con_list
         if weights:
             self.weights = [weights[i-1] for i in self.con_list ]
         else:
@@ -444,6 +446,8 @@ class BCVDatasetCAC(dataset):
         inter_label_list = list(set(label_list) & set(self.con_list))
         if len(inter_label_list) == 0:
             inter_label_list = self.con_list
+        # use num_classes as conditon label to predict foreground
+        inter_label_list = inter_label_list + self.addi_con_list
         condition2 = np.random.choice(inter_label_list)
 
 

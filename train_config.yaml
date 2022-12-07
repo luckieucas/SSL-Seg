@@ -1,7 +1,7 @@
-exp: "rotate_con13457" # threshhold for model1 and model2 are 0.95
-method: C3PS # udse which semi-supervised method [Baseline,MT,EM,C3PS,DAN,CPS,UAMT,ConNet,McNet]
-backbone: unet_3D_old #[unet_3D_old, McNet ]# backbone model
-backbone2: unet_3D_condtion_encoder # backbone for second network [unet_3D_condtion_encoder,unet_3D_condtion,Unet3DConditionBottom]
+exp: "" # threshhold for model1 and model2 are 0.95
+method: CVCL # udse which semi-supervised method [Baseline,MT,EM,C3PS,DAN,CPS,UAMT,ConNet,McNet,CVCL]
+backbone: unet_3D_cl #[unet_3D_old, McNet,unet_3D_cl ]# backbone model
+backbone2: unet_3D_condtion_decoder # backbone for second network [unet_3D_condtion_decoder,unet_3D_condtion,Unet3DConditionBottom]
 dataset_name: MMWHS
 gpu: '1'
 FP16: False
@@ -9,18 +9,18 @@ FP16: False
 # continue training setting
 continue_wandb: False
 continue_training: True
-wandb_id: "194dhn9b"
-model_checkpoint: "../model/MMWHS_2_C3PS_crop_nocut_noscale/unet_3D_old/model_iter_15000_dice_0.8114.pth"
-model2_checkpoint: "../model/MMWHS_2_C3PS_crop_nocut_noscale/unet_3D_old/model2_iter_15000_dice_0.8038.pth"
+wandb_id: "2jkdqxmi"
+model_checkpoint: "../model/MMWHS_2_CVCL_debug_cl_SGD_SGD/unet_3D_cl/model_iter_4600_dice_0.7664.pth"
+model2_checkpoint: "../model/MMWHS_2_C3PS_rotate_con8_SGD_SGD/unet_3D_old/model2_iter_6000_dice_0.387.pth"
 
-current_iter_num: 15000
+current_iter_num: 4000
 
 # semi supervised learning setting
-began_semi_iter: 4000  #8000 #2000
+began_semi_iter: 2000  #8000 #2000
 began_condition_iter: 6000 #4000
 
 # evaluation settings
-began_eval_iter: 400 # 300
+began_eval_iter: 2000 # 300
 val_freq: 200 #200
 
 # training settings
@@ -59,13 +59,22 @@ METHOD:
     stride: 2
     iou_bound_low: 0.1
     iou_bound_high: 0.9
-    con_list: [1,3,4,5,7] # specificy condition list
+    con_list: [1,2,3,4,5,6,7] # specificy condition list
+    addition_con_list: [8]
   ConNet: # config for Context-Aware-Consistency
     stride: 2
     iou_bound_low: 0.1
     iou_bound_high: 0.9
     con_list: [3, 5] # specificy condition list
   McNet:
+  CVCL:
+    stride: 8
+    step_save: 2
+    iou_bound_low: 0.1
+    iou_bound_high: 0.9
+    con_list: [1,2,3,4,5,6,7] # specificy condition list
+    addition_con_list: [8]
+    threshold: 0.5
 DATASET:
   labeled_num: 2
   labeled_num_pl: 60 # labeled number for partial labeled data
@@ -74,7 +83,7 @@ DATASET:
   patch_size: [96,160,160] #[96,112,112] # for DAN #[80,112,112] #[96,160,160]
   cutout: False # do random cutout
   rotate_trans: True # do random rotate
-  scale_trans: False # do random scale
+  scale_trans: True # do random scale
   random_rotflip: False # do random rotation and flip
   edge_prob: 0.1 # prob to learn edge slice
   normalization: 'Zscore'

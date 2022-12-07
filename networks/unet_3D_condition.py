@@ -156,12 +156,14 @@ class unet_3D_Condition(nn.Module):
 
 class Unet3DConditionDecoder(nn.Module):
 
-    def __init__(self, feature_scale=4, n_classes=21, is_deconv=True, in_channels=3, is_batchnorm=True):
+    def __init__(self, feature_scale=4, n_classes=21, is_deconv=True, 
+                 in_channels=3, is_batchnorm=True, condition_noise=False):
         super(Unet3DConditionDecoder, self).__init__()
         self.is_deconv = is_deconv
         self.in_channels = in_channels
         self.is_batchnorm = is_batchnorm
         self.feature_scale = feature_scale
+        self.condition_noise = condition_noise
 
         filters = [64, 128, 256, 512, 1024]
         filters = [int(x / self.feature_scale) for x in filters]
@@ -211,7 +213,8 @@ class Unet3DConditionDecoder(nn.Module):
         maxpool1 = self.maxpool1(conv1)
 
         # expand dim for broadcast
-        condition = condition.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        condition = condition.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).cpu()
+        #condition = condition.item()
 
         #concat condition
         conv2 = self.conv2(maxpool1)
@@ -226,7 +229,14 @@ class Unet3DConditionDecoder(nn.Module):
 
         #concat condition
         B,C,D,W,H = maxpool4.shape
-        c = (torch.ones(B,2,D,W,H).to(device)*condition)
+        if self.condition_noise:
+            c = (
+                torch.ones(B,2,D,W,H)*condition+torch.empty(
+                    (B,2,D,W,H), dtype=torch.float32
+                ).uniform_(-0.01,0.01)
+            ).to(device)
+        else:
+            c = (torch.ones(B,2,D,W,H)*condition).to(device)
         maxpool4 = torch.cat((c,maxpool4),dim=1)
 
         center = self.center(maxpool4)
@@ -234,28 +244,56 @@ class Unet3DConditionDecoder(nn.Module):
 
         #concat condition
         B,C,D,W,H = center.shape
-        c = (torch.ones(B,2,D,W,H).to(device)*condition)
+        if self.condition_noise:
+            c = (
+                torch.ones(B,2,D,W,H)*condition+torch.empty(
+                    (B,2,D,W,H), dtype=torch.float32
+                ).uniform_(-0.01,0.01)
+            ).to(device)
+        else:
+            c = (torch.ones(B,2,D,W,H)*condition).to(device)
         center = torch.cat((c,center),dim=1)
 
         up4 = self.up_concat4(conv4, center)
         
         #concat condition
         B,C,D,W,H = up4.shape
-        c = (torch.ones(B,2,D,W,H).to(device)*condition)
+        if self.condition_noise:
+            c = (
+                torch.ones(B,2,D,W,H)*condition+torch.empty(
+                    (B,2,D,W,H), dtype=torch.float32
+                ).uniform_(-0.01,0.01)
+            ).to(device)
+        else:
+            c = (torch.ones(B,2,D,W,H)*condition).to(device)
         up4 = torch.cat((c,up4),dim=1)
         
         up3 = self.up_concat3(conv3, up4)
 
         #concat condition
         B,C,D,W,H = up3.shape
-        c = (torch.ones(B,2,D,W,H).to(device)*condition)
+        if self.condition_noise:
+            c = (
+                torch.ones(B,2,D,W,H)*condition+torch.empty(
+                    (B,2,D,W,H), dtype=torch.float32
+                ).uniform_(-0.01,0.01)
+            ).to(device)
+        else:
+            c = (torch.ones(B,2,D,W,H)*condition).to(device)
         up3 = torch.cat((c,up3),dim=1)
 
         up2 = self.up_concat2(conv2, up3)
 
         #concat condition
         B,C,D,W,H = up2.shape
-        c = (torch.ones(B,2,D,W,H).to(device)*condition)
+        if self.condition_noise:
+            c = (
+                torch.ones(B,2,D,W,H)*condition+torch.empty(
+                    (B,2,D,W,H), dtype=torch.float32
+                ).uniform_(-0.01,0.01)
+            ).to(device)
+        else:
+            c = (torch.ones(B,2,D,W,H)*condition).to(device)
         up2 = torch.cat((c,up2),dim=1)
 
         up1 = self.up_concat1(conv1, up2)
@@ -263,7 +301,14 @@ class Unet3DConditionDecoder(nn.Module):
 
         #concat condition
         B,C,D,W,H = up1.shape
-        c = (torch.ones(B,2,D,W,H).to(device)*condition)
+        if self.condition_noise:
+            c = (
+                torch.ones(B,2,D,W,H)*condition+torch.empty(
+                    (B,2,D,W,H), dtype=torch.float32
+                ).uniform_(-0.01,0.01)
+            ).to(device)
+        else:
+            c = (torch.ones(B,2,D,W,H)*condition).to(device)
         up1 = torch.cat((c,up1),dim=1)
 
         final = self.final(up1)
