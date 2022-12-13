@@ -17,7 +17,7 @@ from tqdm import tqdm
 import numpy as np
 
 from utils import losses,ramps,cac_loss
-from dataset.BCVData import BCVDataset, BCVDatasetCAC
+from dataset.BCVData import BCVDataset, BCVDatasetCAC,DatasetSR
 from dataset.dataset import DatasetSemi
 from networks.net_factory_3d import net_factory_3d
 from dataset.dataset import TwoStreamBatchSampler
@@ -192,6 +192,17 @@ class SemiSupervisedTrainer:
                 print(f"====>sucessfully load model from{self.network2_checkpoint}")
             else:
                 self._kaiming_normal_init_weight()
+        elif self.method_name == 'CSSR':
+            self.model2 = net_factory_3d(
+                self.backbone2, in_chns=1, class_num=self.num_classes,
+                device=self.device
+            )
+            if self.continue_training:
+                model2_state_dict = torch.load(self.network2_checkpoint)
+                self.model2.load_state_dict(model2_state_dict)
+                print(f"====>sucessfully load model from{self.network2_checkpoint}")
+            else:
+                self._kaiming_normal_init_weight()
         elif self.method_name == 'URPC':
             print("URPC")
             self.model = net_factory_3d(
@@ -263,6 +274,24 @@ class SemiSupervisedTrainer:
                 train_supervised=True,
                 normalization=self.normalization
             )
+        if self.method_name == 'CSSR':
+            self.dataset = DatasetSR(
+                img_list_file=self.train_list,
+                patch_size_small=self.patch_size,
+                patch_size_large=self.method_config['patch_size_large'],
+                num_class=self.num_classes,
+                stride=self.method_config['stride'],
+                iou_bound=[self.method_config['iou_bound_low'],
+                           self.method_config['iou_bound_high']],
+                labeled_num=self.labeled_num,
+                cutout=self.cutout,
+                rotate_trans=self.rotate_trans,
+                scale_trans=self.scale_trans,
+                random_rotflip=self.random_rotflip,
+                upper=self.cut_upper,
+                lower=self.cut_lower,
+                weights=self.weights
+            )
 
     def get_dataloader(self):
         self.dataloader = DataLoader(self.dataset, batch_size=self.batch_size, 
@@ -294,7 +323,7 @@ class SemiSupervisedTrainer:
                                           weight_decay=self.weight_decay,
                                           amsgrad=True)
         
-        if self.method_name in ['CPS', 'C3PS', 'ConNet']:
+        if self.method_name in ['CPS', 'C3PS', 'ConNet', 'CSSR']:
             self.scaler2 = amp.GradScaler()
             if self.optimizer2_type == 'Adam':
                 self.optimizer2 = torch.optim.Adam(
@@ -378,11 +407,16 @@ class SemiSupervisedTrainer:
                     weight=0.1
                 )
                 self._train_CVCL()
+            elif self.method_name == 'CSSR':
+                self._train_CSSR()
             else:
                 print(f"no such method {self.method_name}"+"!"*10)
                 sys.exit(0)
     
-    def evaluation(self, model, do_condition=False, model_name="model"):
+    def evaluation(self, model, do_condition=False, do_SR=False, model_name="model"):
+        """
+        do_SR: whether do super resolution model
+        """
         print("began evaluation!")
         model.eval()
         class_id_list = range(1, self.num_classes)
@@ -401,11 +435,12 @@ class SemiSupervisedTrainer:
         avg_metric = test_all_case_BCV(model,
                                        test_list=self.test_list,
                                        num_classes=self.num_classes,
-                                       patch_size=self.patch_size,
+                                       patch_size=self.method_config['patch_size_large'] if do_SR else self.patch_size,
                                        stride_xy=64, stride_z=64,
                                        cut_upper=self.cut_upper,
                                        cut_lower=self.cut_lower,
                                        do_condition=do_condition,
+                                       do_SR=do_SR,
                                        test_num=test_num,
                                        method=self.method_name.lower(),
                                        con_list=con_list,
@@ -2208,6 +2243,134 @@ class SemiSupervisedTrainer:
                     break
         self.tensorboard_writer.close()
 
+    def _train_CSSR(self):
+        "cross supervision use high resolution"
+        print("================> Training CSSR<===============")
+        iterator = tqdm(range(self.max_epoch), ncols=70)
+        iter_each_epoch = len(self.dataloader)
+        for epoch_num in iterator:
+            for i_batch, sampled_batch in enumerate(self.dataloader):
+                self.model.train()
+                self.model2.train()
+                volume_large, label_large = (
+                    sampled_batch['image_large'].to(self.device),
+                    sampled_batch['label_large'].to(self.device)
+                )
+                volume_small, label_small = (
+                    sampled_batch['image_small'].to(self.device),
+                    sampled_batch['label_small'].to(self.device)
+                )
+                ul_large,br_large = sampled_batch['ul1'],sampled_batch['br1']
+                ul_small,br_small = sampled_batch['ul2'],sampled_batch['br2']
+                ul_large_u = [x[self.labeled_bs:] for x in ul_large ]
+                br_large_u = [x[self.labeled_bs:] for x in br_large ]
+                ul_small_u = [x[self.labeled_bs:] for x in ul_small ]
+                br_small_u = [x[self.labeled_bs:] for x in br_small ]
+                noise1 = torch.clamp(
+                    torch.randn_like(volume_small) * 0.1, 
+                    -0.2, 
+                    0.2
+                )
+                outputs1 = self.model(volume_small+ noise1)
+                outputs_soft1 = torch.softmax(outputs1, dim=1)
+                noise2 = torch.clamp(
+                    torch.randn_like(volume_large) * 0.1, 
+                    -0.2, 
+                    0.2
+                )
+                outputs2 = self.model2(volume_large + noise2)
+                outputs_soft2 = torch.softmax(outputs2, dim=1)
+
+                self.consistency_weight = self._get_current_consistency_weight(
+                    self.current_iter//150
+                )
+                loss1 = 0.5 * (self.ce_loss(outputs1[:self.labeled_bs],
+                                   label_small[:self.labeled_bs].long()) + 
+                               self.dice_loss(outputs_soft1[:self.labeled_bs], 
+                                             label_small[:self.labeled_bs].\
+                                                unsqueeze(1)))
+                loss2 = 0.5 * (self.ce_loss(outputs2[:self.labeled_bs],
+                                   label_large[:self.labeled_bs].long()) + 
+                               self.dice_loss(outputs_soft2[:self.labeled_bs], 
+                                             label_large[:self.labeled_bs].\
+                                                unsqueeze(1)))
+                pseudo_outputs1 = torch.argmax(
+                    outputs_soft1[self.labeled_bs:].detach(),
+                    dim=1, keepdim=False
+                )
+                pseudo_outputs2 = torch.argmax(
+                    outputs_soft2[self.labeled_bs:].detach(),
+                    dim=1, keepdim=False
+                )
+                if self.current_iter < self.began_semi_iter:
+                    pseudo_supervision1 = torch.FloatTensor([0]).to(self.device)
+                    pseudo_supervision2 = torch.FloatTensor([0]).to(self.device)
+                else:
+                    pseudo_supervision1 = self.ce_loss(
+                        outputs1[self.labeled_bs:,:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]],
+                        pseudo_outputs2[:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]]
+                    )
+                    pseudo_supervision2 = self.ce_loss(
+                        outputs2[self.labeled_bs:,:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]],
+                        pseudo_outputs1[:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]]
+                    )
+                model1_loss = loss1 + self.consistency_weight *  \
+                                      pseudo_supervision1
+                model2_loss = loss2 + self.consistency_weight * \
+                                      pseudo_supervision2
+                loss = model1_loss + model2_loss 
+                self.optimizer.zero_grad()
+                self.optimizer2.zero_grad()
+
+                loss.backward()
+                self.optimizer.step()
+                self.optimizer2.step()
+                
+                self._adjust_learning_rate()
+                self.current_iter += 1
+
+                self.tensorboard_writer.add_scalar('lr', self.current_lr, 
+                                               self.current_iter)
+                self.tensorboard_writer.add_scalar(
+                'consistency_weight/consistency_weight',self.consistency_weight, 
+                self.current_iter)
+                self.tensorboard_writer.add_scalar('loss/model1_loss', model1_loss, 
+                                               self.current_iter)
+                self.tensorboard_writer.add_scalar('loss/model2_loss', model2_loss, 
+                                               self.current_iter)
+                self.logging.info(
+                'iteration %d : model1 loss : %f model2 loss : %f' % (
+                    self.current_iter,model1_loss.item(), 
+                    model2_loss.item()))
+
+                if (
+                    self.current_iter > self.began_eval_iter and
+                    self.current_iter % self.val_freq == 0
+                ) or self.current_iter==20:
+                    self.evaluation(model=self.model)
+                    self.evaluation(model=self.model2,do_SR=True,model_name='model2')
+                    self.model.train()
+                    self.model2.train()
+            
+                if self.current_iter % self.save_checkpoint_freq == 0:
+                    save_mode_path = os.path.join(
+                    self.output_folder, 'model1_iter_' + \
+                        str(self.current_iter) + '.pth')
+                    torch.save(self.model.state_dict(), save_mode_path)
+                    self.logging.info("save model1 to {}".format(save_mode_path))
+
+                    save_mode_path = os.path.join(
+                        self.output_folder, 
+                        'model2_iter_' + str(self.current_iter) + '.pth')
+                    torch.save(self.model2.state_dict(), save_mode_path)
+                    self.logging.info("save model2 to {}".format(save_mode_path))
+                if self.current_iter >= self.max_iterations:
+                    break 
+            if self.current_iter >= self.max_iterations:
+                iterator.close()
+                break
+        self.tensorboard_writer.close()
+    
     def _train_ConditionNet(self):
         print("================> Training ConditionNet<===============")   
         iterator = tqdm(range(self.max_epoch), ncols=70)

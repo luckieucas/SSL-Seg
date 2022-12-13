@@ -13,7 +13,8 @@ from random import shuffle
 import random
 
 
-def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1, condition=-1, method='regular', return_scoremap=False):
+def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1, 
+                     condition=-1, do_SR=False, method='regular', return_scoremap=False):
     w, h, d = image.shape
 
     # if the size of image is less than patch_size, then padding it
@@ -60,10 +61,13 @@ def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1,
                 zs = min(stride_z * z, dd-patch_size[2])
                 test_patch = image[xs:xs+patch_size[0],
                                    ys:ys+patch_size[1], zs:zs+patch_size[2]]
+
                 test_patch = np.expand_dims(np.expand_dims(
                     test_patch, axis=0), axis=0).astype(np.float32)
-                test_patch = torch.from_numpy(test_patch).to(device)
-                
+                if do_SR:
+                    test_patch = F.interpolate(torch.as_tensor(test_patch), size=(96,160,160), mode='trilinear').to(device)
+                else:
+                    test_patch = torch.from_numpy(test_patch).to(device)
 
                 with torch.no_grad():
                     if condition>0:
@@ -129,7 +133,7 @@ def test_all_case(net, base_dir, test_list="full_test.list", num_classes=4, patc
 
 def test_all_case_BCV(net, test_list="full_test.list", num_classes=4, 
                         patch_size=(48, 160, 160), stride_xy=32, stride_z=24, 
-                        do_condition=False, method="regular",
+                        do_condition=False, do_SR=False,method="regular",
                         cal_metric=True,
                         save_prediction=False,
                         prediction_save_path='./',
@@ -144,7 +148,10 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
         with open(test_list, 'r') as f:
             image_list = [img.replace('\n','') for img in f.readlines()]
     print("Total test images:",len(image_list))
-    total_metric = np.zeros((len(con_list), 2))
+    if con_list:
+        total_metric = np.zeros((len(con_list), 2))
+    else:
+        total_metric = np.zeros((num_classes-1, 2))
     print("Validation begin")
     if con_list:
         condition_list = con_list # for condition learning
@@ -196,7 +203,8 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
         else:
             prediction = test_single_case(
                 net, image, stride_xy, stride_z, patch_size, 
-                num_classes=num_classes, condition=-1, method=method)
+                num_classes=num_classes, condition=-1, do_SR=do_SR,
+                method=method)
             if cal_metric:
                 for i in range(1, num_classes):
                     total_metric[i-1, :] += calculate_metric(label == i, prediction == i)

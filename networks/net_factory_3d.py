@@ -17,6 +17,7 @@ from networks.nnunet import initialize_network
 from unet3d.model import get_model
 from .McNet import MCNet3d_v2
 from networks.unet_3D_cl import unet_3D_cl 
+from networks.unet_3D_sr import unet_3D_sr
 
 def net_factory_3d(net_type="unet_3D", in_chns=1, class_num=2, 
                    model_config=None, device=None, condition_noise=False):
@@ -61,6 +62,9 @@ def net_factory_3d(net_type="unet_3D", in_chns=1, class_num=2,
             feature_scale=4, n_classes=class_num, is_deconv=True, 
             in_channels=1, is_batchnorm=True
         ).to(device)
+    elif net_type == 'unet_3D_sr':
+        net = unet_3D_sr(feature_scale=4, n_classes=class_num, is_deconv=True, 
+                         in_channels=1, is_batchnorm=True).to(device)
     else:
         net = None
     return net

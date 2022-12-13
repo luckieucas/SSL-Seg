@@ -14,6 +14,7 @@ import numpy as np
 import SimpleITK as sitk
 from tqdm import tqdm
 from collections import Counter
+import torch.nn.functional as F
 
 try:
     from data_augmentation import (
@@ -503,7 +504,6 @@ class DatasetSR(dataset):
         print(f"condition list:{self.con_list}")
 
     def __getitem__(self, index):
-        print(f"index:{index}")
         if len(self.img_list[index].strip().split()) > 1:
             img_path, mask_path = self.img_list[index].strip().split()
         else:
@@ -539,7 +539,7 @@ class DatasetSR(dataset):
             mask_array_extend[gap//2:gap//2+img_shape[0],:,:] = mask_array
             img_array = img_array_extend
             mask_array = mask_array_extend
-        
+        img_shape = img_array.shape
         if img_shape[1]< self.patch_size_large[1]:
                 #need to extend data
             gap = self.patch_size_large[1]-img_shape[1]
@@ -549,6 +549,7 @@ class DatasetSR(dataset):
             mask_array_extend[:,gap//2:gap//2+img_shape[1],:] = mask_array
             img_array = img_array_extend
             mask_array = mask_array_extend
+        img_shape = img_array.shape
         if img_shape[2]< self.patch_size_large[2]:
                     #need to extend data
             gap = self.patch_size_large[2]-img_shape[2]
@@ -608,17 +609,17 @@ class DatasetSR(dataset):
                 k += 1
                 continue
             
+            bbox_x_ub2 = bbox_x_lb2 + self.patch_size_small[0]
+            bbox_y_ub2 = bbox_y_lb2 + self.patch_size_small[1]
+            bbox_z_ub2 = bbox_z_lb2 + self.patch_size_small[2]
             overlap1_ul = [max(0, bbox_x_lb2-bbox_x_lb1), max(0, bbox_y_lb2-bbox_y_lb1),max(0,bbox_z_lb2-bbox_z_lb1) ]
-            overlap1_br = [min(self.patch_size_large[0], self.patch_size_large[0]+bbox_x_lb2-bbox_x_lb1, shape[0]//self.stride * self.stride), 
-                        min(self.patch_size_large[1], self.patch_size_large[1]+bbox_y_lb2-bbox_y_lb1, shape[1]//self.stride * self.stride),
-                        min(self.patch_size_large[2], self.patch_size_large[2]+bbox_z_lb2-bbox_z_lb1, shape[2]//self.stride * self.stride)]
+            overlap1_br = [min(self.patch_size_large[0], self.patch_size_small[0]+bbox_x_lb2-bbox_x_lb1, shape[0]//self.stride * self.stride), 
+                        min(self.patch_size_large[1], self.patch_size_small[1]+bbox_y_lb2-bbox_y_lb1, shape[1]//self.stride * self.stride),
+                        min(self.patch_size_large[2], self.patch_size_small[2]+bbox_z_lb2-bbox_z_lb1, shape[2]//self.stride * self.stride)]
             
             inter = (overlap1_br[0]-overlap1_ul[0])*(overlap1_br[1]-overlap1_ul[1])*(overlap1_br[2]-overlap1_ul[2])
             #inter = (self.patch_size_large[0] - abs(bbox_x_lb2-bbox_x_lb1)) * (self.patch_size_large[1] - abs(bbox_y_lb2-bbox_y_lb1)) * (self.patch_size_large[2] - abs(bbox_z_lb2-bbox_z_lb1))
-            union = self.patch_size_large[0]*self.patch_size_large[1]*self.patch_size_large[2] + \
-                    self.patch_size_small[0]*self.patch_size_small[1]*self.patch_size_small[2]- inter
-            iou = inter / union
-            print(f"iou:{iou}")
+            iou = inter / (self.patch_size_small[0]*self.patch_size_small[1]*self.patch_size_small[2])
             if iou >= self.iou_bound[0] and iou <= self.iou_bound[1]:
                 break
             k+=1
@@ -627,16 +628,12 @@ class DatasetSR(dataset):
             bbox_x_lb2  = bbox_x_lb1
             bbox_y_lb2  = bbox_y_lb1
             bbox_z_lb2  = bbox_z_lb1
-        overlap1_ul = [max(0, bbox_x_lb2-bbox_x_lb1), max(0, bbox_y_lb2-bbox_y_lb1),max(0,bbox_z_lb2-bbox_z_lb1) ]
-        overlap1_br = [min(self.patch_size_large[0], self.patch_size_large[0]+bbox_x_lb2-bbox_x_lb1, shape[0]//self.stride * self.stride), 
-                        min(self.patch_size_large[1], self.patch_size_large[1]+bbox_y_lb2-bbox_y_lb1, shape[1]//self.stride * self.stride),
-                        min(self.patch_size_large[2], self.patch_size_large[2]+bbox_z_lb2-bbox_z_lb1, shape[2]//self.stride * self.stride)]
         
         overlap2_ul = [max(0, bbox_x_lb1-bbox_x_lb2), max(0, bbox_y_lb1 - bbox_y_lb2),max(0,bbox_z_lb1- bbox_z_lb2) ]
         
-        overlap2_br = [min(self.patch_size_small[0], self.patch_size_small[0]+bbox_x_lb1-bbox_x_lb2, shape[0]//self.stride * self.stride), 
-                       min(self.patch_size_small[1], self.patch_size_small[1]+bbox_y_lb1-bbox_y_lb2, shape[1]//self.stride * self.stride),
-                       min(self.patch_size_small[2], self.patch_size_small[2]+bbox_z_lb1-bbox_z_lb2, shape[2]//self.stride * self.stride)]
+        overlap2_br = [min(self.patch_size_small[0], self.patch_size_large[0]+bbox_x_lb1-bbox_x_lb2, shape[0]//self.stride * self.stride), 
+                       min(self.patch_size_small[1], self.patch_size_large[1]+bbox_y_lb1-bbox_y_lb2, shape[1]//self.stride * self.stride),
+                       min(self.patch_size_small[2], self.patch_size_large[2]+bbox_z_lb1-bbox_z_lb2, shape[2]//self.stride * self.stride)]
         try:
             assert (overlap1_br[0]-overlap1_ul[0]) * (overlap1_br[1]-overlap1_ul[1]) * (overlap1_br[2]-overlap1_ul[2]) == (overlap2_br[0]-overlap2_ul[0]) * (overlap2_br[1]-overlap2_ul[1]) * (overlap2_br[2]-overlap2_ul[2])
         except:
@@ -646,9 +643,7 @@ class DatasetSR(dataset):
             print(f"bbox_z_lb1:{bbox_z_lb1},bbox_z_lb2:{bbox_z_lb2}")
             print("x: {}, y: {}, z: {}".format(shape[0], shape[1], shape[2]))
             exit()
-        bbox_x_ub2 = bbox_x_lb2 + self.patch_size_small[0]
-        bbox_y_ub2 = bbox_y_lb2 + self.patch_size_small[1]
-        bbox_z_ub2 = bbox_z_lb2 + self.patch_size_small[2]
+
         # whoever wrote this knew what he was doing (hint: it was me). We first crop the data to the region of the
         # bbox that actually lies within the data. This will result in a smaller array which is then faster to pad.
         # valid_bbox is just the coord that lied within the data cube. It will be padded to match the patch size
@@ -751,10 +746,7 @@ class DatasetSR(dataset):
             img_array1 = img1[0,:]
             img_array2 = img2[0,:]
         
-        print(f"img1 shape:{img_array1.shape}, img2 shape:{img_array2.shape}")
-        img_array = np.concatenate((img_array1, img_array2), axis=0)
-        mask_array = np.concatenate((mask_array1.unsqueeze(0).unsqueeze(0), 
-                                     mask_array2.unsqueeze(0).unsqueeze(0)), axis=0)
+        img_array1 = resize3d(img_array1[0],tuple(self.patch_size_small))[np.newaxis,:]
 
         
         ul1=overlap1_ul
@@ -763,39 +755,26 @@ class DatasetSR(dataset):
         br2=overlap2_br
 
 
-        # get condition list
-        label_list = list(np.unique(mask_array1))
-        if 0 in label_list:
-            label_list.remove(0)
-        inter_label_list = list(set(label_list) & set(self.con_list))
-        if len(inter_label_list) == 0:
-            inter_label_list = self.con_list
-        condition1 = np.random.choice(inter_label_list)
-
-        # get condition2 for all mask array2
-        label_list = list(np.unique(mask_array2))
-        if 0 in label_list:
-            label_list.remove(0)
-        inter_label_list = list(set(label_list) & set(self.con_list))
-        if len(inter_label_list) == 0:
-            inter_label_list = self.con_list
-        # use num_classes as conditon label to predict foreground
-        inter_label_list = inter_label_list + self.addi_con_list
-        condition2 = np.random.choice(inter_label_list)
-
-
-        img_array = torch.FloatTensor(img_array).unsqueeze(1)
-        mask_array = torch.FloatTensor(mask_array).squeeze()
-        condition_each_volume = torch.Tensor([condition1, condition2])
-        sample = {'image': img_array, 'label': mask_array.long(), 'ul1': ul1, 
+        sample = {'image_large': img_array1, 'label_large': mask_array1.long(),
+                  'image_small': img_array2, 'label_small': mask_array2.long(),
+                  'ul1': ul1, 
                   'br1': br1, 'ul2': ul2, 'br2': br2, 
-                  'condition': condition_each_volume.long(),
                   'img_path':img_path}
         return sample
 
     def __len__(self):
         return len(self.img_list)
 
+
+def resize3d(image, shape, mode='trilinear', data_type='numpy'):
+    """
+        resize 3d image
+    """
+    if data_type == 'numpy':
+        image = torch.tensor(image)[None,None,:,:,:]
+    image = F.interpolate(torch.as_tensor(image), size=shape, mode=mode)
+    image = image[0,0,:,:,:].numpy()
+    return image
 
 
 if __name__ == '__main__':
@@ -824,30 +803,38 @@ if __name__ == '__main__':
                 img_list_file=train_file_list, 
                 num_class=6, 
                 stride=8, 
-                iou_bound=[0.3,0.95],
+                iou_bound=[0.2,1.01],
                 labeled_num=4,
                 cutout=True,
                 rotate_trans=True,
                 con_list=[2,3,5],
+                addi_con_list=[8],
                 weights=[0.2,0.2,0.2,0.1,0.3]
     )
     con_list =[0]*5
     con_vol_list = [0]*5
     for data_batch in tqdm(db_train):
         #img_path, = data_batch['img_path'], 
-        image,label = data_batch['image'], data_batch['label']
-        condition = data_batch['condition']
-        print(f"con shape:{condition.shape}")
-        print(f"label shape:{label.shape}")
-        #ul1,br1,ul2,br2 = data_batch['ul1'], data_batch['br1'], data_batch['ul2'], data_batch['br2']
+        image_large,label_large = data_batch['image_large'], data_batch['label_large']
+        image_small,label_small = data_batch['image_small'], data_batch['label_small']
+        #condition = data_batch['condition']
+        #print(f"con shape:{condition.shape}")
+        print(f"label large shape:{label_large.shape}")
+        print(f"label small shape:{label_small.shape}")
+        print(f"image large shape:{image_large.shape}")
+        print(f"image small shape:{image_small.shape}")
+        ul1,br1,ul2,br2 = data_batch['ul1'], data_batch['br1'], data_batch['ul2'], data_batch['br2']
+        target1_overlap = label_large[ ul1[0]:br1[0], ul1[1]:br1[1], ul1[2]:br1[2]]
+        target2_overlap = label_small[ ul2[0]:br2[0], ul2[1]:br2[1], ul2[2]:br2[2]]
+        #assert (target1_overlap!=target2_overlap).sum() == 0,"error"
         # print("image shape:", image.shape)
         # print("conditon:",condition)
         # print("condition volume:",condition_volume)
-        for con in condition:
-            print("con:",con)
-            con_list[con.item()-1]+=1
+        # for con in condition:
+        #     print("con:",con)
+        #     con_list[con.item()-1]+=1
     
-    print("con list:",con_list)
-    print("con volume list:", con_vol_list)
+    # print("con list:",con_list)
+    # print("con volume list:", con_vol_list)
         #print("ul1:{}, br1:{}, ul2:{}, br2:{}".format(ul1, br1, ul2, br2))
         #print(label.dtype)

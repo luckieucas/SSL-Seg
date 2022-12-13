@@ -62,13 +62,6 @@ class unet_3D_sr(nn.Module):
 
         self.dropout1 = nn.Dropout(p=0.3)
         self.dropout2 = nn.Dropout(p=0.3)
-        
-        self.project = nn.Sequential(
-                nn.Conv3d(128, 128, kernel_size=1, stride=1),
-                nn.InstanceNorm3d(128),
-                nn.ReLU(inplace=True),
-                nn.Conv3d(128, 64, kernel_size=1, stride=1)
-            )
 
         # initialise weights
         for m in self.modules():
@@ -93,7 +86,6 @@ class unet_3D_sr(nn.Module):
         center = self.center(maxpool4)
         center = self.dropout1(center)
         up4 = self.up_concat4(conv4, center)
-        cl_output = F.normalize(self.project(up4), 2, 1)
         up3 = self.up_concat3(conv3, up4)
         up2 = self.up_concat2(conv2, up3)
         up1 = self.up_concat1(conv1, up2)
@@ -102,7 +94,7 @@ class unet_3D_sr(nn.Module):
 
         final = self.final(up1)
 
-        return final,cl_output
+        return final
 
     @staticmethod
     def apply_argmax_softmax(pred):
