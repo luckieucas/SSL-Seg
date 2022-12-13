@@ -1,6 +1,6 @@
 exp: "" # threshhold for model1 and model2 are 0.95
-method: CVCL # udse which semi-supervised method [Baseline,MT,EM,C3PS,DAN,CPS,UAMT,ConNet,McNet,CVCL]
-backbone: unet_3D_cl #[unet_3D_old, McNet,unet_3D_cl ]# backbone model
+method: ConNet # udse which semi-supervised method [Baseline,MT,EM,C3PS,DAN,CPS,UAMT,ConNet,McNet,CVCL]
+backbone: unet_3D_old #[unet_3D_old, McNet,unet_3D_cl ]# backbone model
 backbone2: unet_3D_condtion_decoder # backbone for second network [unet_3D_condtion_decoder,unet_3D_condtion,Unet3DConditionBottom]
 dataset_name: MMWHS
 gpu: '1'
@@ -8,7 +8,7 @@ FP16: False
 
 # continue training setting
 continue_wandb: False
-continue_training: True
+continue_training: False
 wandb_id: "2jkdqxmi"
 model_checkpoint: "../model/MMWHS_2_CVCL_debug_cl_SGD_SGD/unet_3D_cl/model_iter_4600_dice_0.7664.pth"
 model2_checkpoint: "../model/MMWHS_2_C3PS_rotate_con8_SGD_SGD/unet_3D_old/model2_iter_6000_dice_0.387.pth"
@@ -20,7 +20,7 @@ began_semi_iter: 2000  #8000 #2000
 began_condition_iter: 6000 #4000
 
 # evaluation settings
-began_eval_iter: 2000 # 300
+began_eval_iter: 1000 # 300
 val_freq: 200 #200
 
 # training settings
@@ -65,7 +65,8 @@ METHOD:
     stride: 2
     iou_bound_low: 0.1
     iou_bound_high: 0.9
-    con_list: [3, 5] # specificy condition list
+    con_list: [1,2,3,4,5,6,7] # specificy condition list
+    addition_con_list: [8]
   McNet:
   CVCL:
     stride: 8
@@ -100,7 +101,7 @@ DATASET:
     cut_lower: -200 # -1000 -68 for urpc 
   MMWHS: # config for MMWHS dataset
     num_classes: 8
-    class_name_list: ['MYO', 'LA', 'LV', 'RA', 'AA', 'PA', 'RV']
+    class_name_list: ['MYO', 'LA', 'LV', 'RA', 'AA', 'PA', 'RV','Foreground']
     weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     train_list: "../data/MMWHS/MMWHS_train.txt"
     train_list_pl: "../data/Pancreas/pancreas_test.txt" # train list for partial labeled data
@@ -119,7 +120,7 @@ DATASET:
     cut_lower: -1000
   BCV: # config for BCV dataset
     num_classes: 6
-    class_name_list: ['Spleen', 'Right_Kidney', 'Left_Kidney','Liver','Pancreas']
+    class_name_list: ['Spleen', 'Right_Kidney', 'Left_Kidney','Liver','Pancreas','Foreground']
     weights: [1.0,1.0,1.0,1.0,1.0] #[0.2,0.2,0.2,0.1,0.3]
     train_list: "../data/BCV/train.txt"
     train_list_pl: "../data/Pancreas/pancreas_test.txt" # train list for partial labeled data

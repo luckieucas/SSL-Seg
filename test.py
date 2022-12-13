@@ -131,28 +131,32 @@ def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1,
     return label_map
 
 
-def cal_metric(gt, pred, cal_hd95=False, spacing=None):
+def cal_metric(gt, pred, cal_hd95=False, cal_asd=False, spacing=None):
     if pred.sum() > 0 and gt.sum() > 0:
         dice = metric.binary.dc(pred, gt)
         if cal_hd95:
             hd95 = metric.binary.hd95(pred, gt, voxelspacing=spacing)
         else:
             hd95 = 0.0
-        return np.array([dice, hd95])
+        if cal_asd:
+            asd = metric.binary.asd(pred, gt, voxelspacing=spacing)
+        else:
+            asd = 0.0
+        return np.array([dice, hd95, asd])
     else:
-        return np.zeros(2)
+        return np.zeros(3)
 
 
 
 def test_all_case_BCV(net, test_list="full_test.list", num_classes=4, 
                       patch_size=(48, 160, 160), stride_xy=32, stride_z=24, 
-                      condition=-1, method="regular", cal_hd95=False,
-                      cut_lower=-68, cut_upper=200, save_prediction=False,
-                      prediction_save_path='./',
+                      condition=-1,method="regular",cal_hd95=False,
+                      cal_asd=False,cut_lower=-68, cut_upper=200, 
+                      save_prediction=False,prediction_save_path='./',
                       class_name_list=[]):
     with open(test_list, 'r') as f:
         image_list = [img.replace('\n','') for img in f.readlines()]
-    total_metric = np.zeros((num_classes-1, 2))
+    total_metric = np.zeros((num_classes-1, 3))
     all_scores = OrderedDict() # for save as json
     all_scores['all'] = []
     all_scores['mean'] = OrderedDict()
@@ -186,21 +190,23 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
             net, image, stride_xy, stride_z, patch_size, 
             num_classes=num_classes, condition=condition, method=method)
         
-        each_metric = np.zeros((num_classes-1, 2))
+        each_metric = np.zeros((num_classes-1, 3))
         for i in range(1, num_classes):
             metrics = cal_metric(
-                label == i, prediction == i, cal_hd95=cal_hd95, spacing=spacing
+                label==i, prediction==i, cal_hd95=cal_hd95,
+                cal_asd=cal_asd, spacing=spacing
             )
             print(f"class:{class_name_list[i-1]}, metric:{metrics}")
             res_metric[class_name_list[i-1]] = {
-                'Dice':metrics[0],'HD95':metrics[1]
+                'Dice':metrics[0],'HD95':metrics[1],'ASD':metrics[2]
             }
 
             img_num[i-1]+=1
             total_metric[i-1, :] += metrics
             each_metric[i-1, :] += metrics
         res_metric['Mean'] = {
-                'Dice':each_metric[:,0].mean(),'HD95':each_metric[:,1].mean()
+                'Dice':each_metric[:,0].mean(),'HD95':each_metric[:,1].mean(),
+                'ASD':each_metric[:,2].mean()
             }
         all_scores['all'].append(res_metric)
         if save_prediction: 
@@ -214,12 +220,14 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
     mean_metric = total_metric / img_num
     for i in range(1, num_classes):
         all_scores['mean'][class_name_list[i-1]] = {
-            'Dice':mean_metric[i-1][0],
-            'HD95': mean_metric[i-1][1]
+            'Dice': mean_metric[i-1][0],
+            'HD95': mean_metric[i-1][1],
+            'ASD': mean_metric[i-1][2]
         }
     all_scores['mean']['mean']={
         'Dice':mean_metric[:,0].mean(),
-        'HD95':mean_metric[:,1].mean()
+        'HD95':mean_metric[:,1].mean(),
+        'ASD':mean_metric[:,2].mean()
     }
     save_json(all_scores,prediction_save_path+"/Results.json")
     print("***************************validation end**************************")
@@ -268,6 +276,7 @@ if __name__ == '__main__':
                         stride_xy=64, 
                         stride_z=64,
                         cal_hd95=True,
+                        cal_asd=True,
                         cut_upper=cut_upper,
                         cut_lower=cut_lower,
                         save_prediction=True,
@@ -276,4 +285,4 @@ if __name__ == '__main__':
                         method = method
                     )
     print(avg_metric)
-    print(avg_metric[:, 0].mean(),avg_metric[:,1].mean())
+    print(avg_metric[:, 0].mean(),avg_metric[:,1].mean(), avg_metric[:,2].mean())

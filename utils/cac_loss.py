@@ -161,7 +161,6 @@ class CAC(nn.Module):
 
         logits1 = torch.exp(pos1 - neg_max1).squeeze(-1) / (logits1_down + eps)
         
-        # use the partially label to filter the wrong predict
         pos_mask_1 = ((pseudo_logits2_overlap > self.pos_thresh_value) & (pseudo_logits1_overlap < pseudo_logits2_overlap)).float()
         
         loss1 = -torch.log(logits1 + eps)
@@ -202,7 +201,6 @@ class CAC(nn.Module):
         #print("pos mask 2:", pos_mask_2.sum())
         loss2 = -torch.log(logits2 + eps)
         loss2 = (loss2 * pos_mask_2).sum() / (pos_mask_2.sum() + 1e-12)
-
 
         loss_unsup = self.weight * (loss1 + loss2 )
 

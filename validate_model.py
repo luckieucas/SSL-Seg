@@ -1,5 +1,6 @@
 import torch
 from networks.unet_3D_cl import unet_3D_cl
+from networks.unet_3D_sr import unet_3D_sr
 
 
 
@@ -96,11 +97,11 @@ from networks.unet_3D_cl import unet_3D_cl
 """
 
 def main():
-    model = unet_3D_cl(feature_scale=4, n_classes=5, is_deconv=True, 
+    model = unet_3D_sr(feature_scale=4, n_classes=5, is_deconv=True, 
                        in_channels=1, is_batchnorm=True)
     input = torch.randn(2,1,96,160,160)
     print(input.shape)
-    output = model(input)
+    output,_ = model(input)
     print(f"output shape:{output.shape}")
 
 if __name__ == "__main__":

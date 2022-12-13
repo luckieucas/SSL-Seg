@@ -107,16 +107,7 @@ class SemiSupervisedTrainer:
         self.dice_loss = losses.DiceLoss(self.num_classes)
         self.dice_loss_con = losses.DiceLoss(2)
         self.dice_loss2 = DiceLoss(normalization='softmax')
-        self.cvcl_loss = cac_loss.CAC(
-            self.num_classes, 
-            stride=self.method_config['stride'], 
-            selected_num=400, 
-            b = 500, 
-            step_save=self.method_config['step_save'], 
-            temp=0.1, proj_final_dim=64, 
-            pos_thresh_value=self.method_config['threshold'], 
-            weight=0.1
-        )
+        self.cvcl_loss = None
         self.best_performance = 0.0
         self.best_performance2 = 0.0 # for CPS based methods
         self.current_iter = 0
@@ -376,6 +367,16 @@ class SemiSupervisedTrainer:
             elif self.method_name == 'McNet':
                 self._train_McNet()
             elif self.method_name == 'CVCL':
+                self.cvcl_loss = cac_loss.CAC(
+                    self.num_classes, 
+                    stride=self.method_config['stride'], 
+                    selected_num=400, 
+                    b = 500, 
+                    step_save=self.method_config['step_save'], 
+                    temp=0.1, proj_final_dim=64, 
+                    pos_thresh_value=self.method_config['threshold'], 
+                    weight=0.1
+                )
                 self._train_CVCL()
             else:
                 print(f"no such method {self.method_name}"+"!"*10)
@@ -388,7 +389,7 @@ class SemiSupervisedTrainer:
         if do_condition:
             best_performance = self.best_performance2
             model_name = "model2"
-            con_list = self.method_config['con_list']
+            con_list = self.method_config['con_list'] + self.method_config['addition_con_list']
             class_id_list = con_list
         else:
             best_performance = self.best_performance
@@ -2225,7 +2226,7 @@ class SemiSupervisedTrainer:
                 condition_batch = torch.cat([
                         condition_batch[0],
                         condition_batch[1]
-                    ],dim=0).unsqueeze(1).cuda()
+                    ],dim=0).unsqueeze(1).to(self.device)
                 labeled_idxs_batch = torch.arange(0, self.labeled_bs)
                 if self.use_CAC:
                     volume_batch = torch.cat(
@@ -2252,10 +2253,10 @@ class SemiSupervisedTrainer:
 
                 outputs2 = self.model2(volume_batch+noise, condition_batch)
                 outputs_soft2 = torch.softmax(outputs2, dim=1)
-                label_batch_con = (
-                    label_batch==condition_batch.unsqueeze(-1).unsqueeze(-1)
-                ).long()
-                loss2 = 0.5 * (
+                label_batch_con = self._get_label_batch_for_conditional_net(
+                    label_batch,condition_batch
+                )
+                loss2 =  (
                     self.ce_loss(
                         outputs2[labeled_idxs_batch],
                         label_batch_con[labeled_idxs_batch].long()

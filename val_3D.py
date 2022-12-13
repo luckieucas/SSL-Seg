@@ -144,7 +144,7 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
         with open(test_list, 'r') as f:
             image_list = [img.replace('\n','') for img in f.readlines()]
     print("Total test images:",len(image_list))
-    total_metric = np.zeros((num_classes-1, 2))
+    total_metric = np.zeros((len(con_list), 2))
     print("Validation begin")
     if con_list:
         condition_list = con_list # for condition learning
@@ -187,7 +187,10 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
                     net, image, stride_xy, stride_z, patch_size, 
                     num_classes=2, condition=condition, method=method)
                 if cal_metric:
-                    metric = calculate_metric(label==condition, prediction)
+                    if condition<num_classes:
+                        metric = calculate_metric(label==condition, prediction)
+                    else:
+                        metric = calculate_metric(label>0, prediction)
                     print(f"condition:{condition}, metric:{metric}")
                     total_metric[condition-1, :] += metric
         else:
