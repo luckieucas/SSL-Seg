@@ -2338,6 +2338,11 @@ class SemiSupervisedTrainer:
                                                self.current_iter)
                 self.tensorboard_writer.add_scalar('loss/model2_loss', model2_loss, 
                                                self.current_iter)
+                self.tensorboard_writer.add_scalar('loss/pseudo1_loss', pseudo_supervision1, 
+                                               self.current_iter)
+                self.tensorboard_writer.add_scalar('loss/pseudo2_loss', pseudo_supervision1, 
+                                               self.current_iter)
+                
                 self.logging.info(
                 'iteration %d : model1 loss : %f model2 loss : %f' % (
                     self.current_iter,model1_loss.item(), 

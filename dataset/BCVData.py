@@ -609,9 +609,6 @@ class DatasetSR(dataset):
                 k += 1
                 continue
             
-            bbox_x_ub2 = bbox_x_lb2 + self.patch_size_small[0]
-            bbox_y_ub2 = bbox_y_lb2 + self.patch_size_small[1]
-            bbox_z_ub2 = bbox_z_lb2 + self.patch_size_small[2]
             overlap1_ul = [max(0, bbox_x_lb2-bbox_x_lb1), max(0, bbox_y_lb2-bbox_y_lb1),max(0,bbox_z_lb2-bbox_z_lb1) ]
             overlap1_br = [min(self.patch_size_large[0], self.patch_size_small[0]+bbox_x_lb2-bbox_x_lb1, shape[0]//self.stride * self.stride), 
                         min(self.patch_size_large[1], self.patch_size_small[1]+bbox_y_lb2-bbox_y_lb1, shape[1]//self.stride * self.stride),
@@ -629,11 +626,18 @@ class DatasetSR(dataset):
             bbox_y_lb2  = bbox_y_lb1
             bbox_z_lb2  = bbox_z_lb1
         
+        overlap1_ul = [max(0, bbox_x_lb2-bbox_x_lb1), max(0, bbox_y_lb2-bbox_y_lb1),max(0,bbox_z_lb2-bbox_z_lb1) ]
+        overlap1_br = [min(self.patch_size_large[0], self.patch_size_small[0]+bbox_x_lb2-bbox_x_lb1, shape[0]//self.stride * self.stride), 
+                        min(self.patch_size_large[1], self.patch_size_small[1]+bbox_y_lb2-bbox_y_lb1, shape[1]//self.stride * self.stride),
+                        min(self.patch_size_large[2], self.patch_size_small[2]+bbox_z_lb2-bbox_z_lb1, shape[2]//self.stride * self.stride)]
+        
         overlap2_ul = [max(0, bbox_x_lb1-bbox_x_lb2), max(0, bbox_y_lb1 - bbox_y_lb2),max(0,bbox_z_lb1- bbox_z_lb2) ]
         
         overlap2_br = [min(self.patch_size_small[0], self.patch_size_large[0]+bbox_x_lb1-bbox_x_lb2, shape[0]//self.stride * self.stride), 
                        min(self.patch_size_small[1], self.patch_size_large[1]+bbox_y_lb1-bbox_y_lb2, shape[1]//self.stride * self.stride),
                        min(self.patch_size_small[2], self.patch_size_large[2]+bbox_z_lb1-bbox_z_lb2, shape[2]//self.stride * self.stride)]
+        
+        
         try:
             assert (overlap1_br[0]-overlap1_ul[0]) * (overlap1_br[1]-overlap1_ul[1]) * (overlap1_br[2]-overlap1_ul[2]) == (overlap2_br[0]-overlap2_ul[0]) * (overlap2_br[1]-overlap2_ul[1]) * (overlap2_br[2]-overlap2_ul[2])
         except:
@@ -648,6 +652,9 @@ class DatasetSR(dataset):
         # bbox that actually lies within the data. This will result in a smaller array which is then faster to pad.
         # valid_bbox is just the coord that lied within the data cube. It will be padded to match the patch size
         # later
+        bbox_x_ub2 = bbox_x_lb2 + self.patch_size_small[0]
+        bbox_y_ub2 = bbox_y_lb2 + self.patch_size_small[1]
+        bbox_z_ub2 = bbox_z_lb2 + self.patch_size_small[2]
         valid_bbox_x_lb1 = max(0, bbox_x_lb1)
         valid_bbox_x_ub1 = min(shape[0], bbox_x_ub1)
         valid_bbox_y_lb1 = max(0, bbox_y_lb1)
