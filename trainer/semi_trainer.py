@@ -2309,10 +2309,16 @@ class SemiSupervisedTrainer:
                     pseudo_supervision1 = self.ce_loss(
                         outputs1[self.labeled_bs:,:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]],
                         pseudo_outputs2[:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]]
+                    ) + self.dice_loss(
+                        outputs1[self.labeled_bs:,:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]],
+                        pseudo_outputs2[:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]].unsqueeze(1)
                     )
                     pseudo_supervision2 = self.ce_loss(
                         outputs2[self.labeled_bs:,:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]],
                         pseudo_outputs1[:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]]
+                    ) + self.dice_loss(
+                        outputs2[self.labeled_bs:,:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]],
+                        pseudo_outputs1[:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]].unsqueeze(1)
                     )
                 model1_loss = loss1 + self.consistency_weight *  \
                                       pseudo_supervision1
@@ -2340,7 +2346,7 @@ class SemiSupervisedTrainer:
                                                self.current_iter)
                 self.tensorboard_writer.add_scalar('loss/pseudo1_loss', pseudo_supervision1, 
                                                self.current_iter)
-                self.tensorboard_writer.add_scalar('loss/pseudo2_loss', pseudo_supervision1, 
+                self.tensorboard_writer.add_scalar('loss/pseudo2_loss', pseudo_supervision2, 
                                                self.current_iter)
                 
                 self.logging.info(
