@@ -35,8 +35,8 @@ from torchvision import transforms
 from tqdm import tqdm
 
 from config import get_config
-from dataloaders import utils
-from dataloaders.dataset import (BaseDataSets, RandomGenerator,
+from dataset import utils
+from dataset.dataset_old import (BaseDataSets, RandomGenerator,
                                  TwoStreamBatchSampler)
 from networks.net_factory import net_factory
 from networks.vision_transformer import SwinUnet as ViT_seg
@@ -45,9 +45,9 @@ from val_2D import test_single_volume
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
-                    default='../data/ACDC', help='Name of Experiment')
+                    default='/data/liupeng/semi-supervised_segmentation/nnUNetFrame/DATASET/nnUNet_raw/nnUNet_raw_data/Task11_BCV/Training/', help='Name of Experiment')
 parser.add_argument('--exp', type=str,
-                    default='ACDC/Cross_Teaching_Between_CNN_Transformer', help='experiment_name')
+                    default='BCV/Cross_Teaching_Between_CNN_Transformer', help='experiment_name')
 parser.add_argument('--model', type=str,
                     default='unet', help='model_name')
 parser.add_argument('--max_iterations', type=int,
@@ -61,7 +61,7 @@ parser.add_argument('--base_lr', type=float,  default=0.01,
 parser.add_argument('--patch_size', type=list,  default=[224, 224],
                     help='patch size of network input')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
-parser.add_argument('--num_classes', type=int,  default=4,
+parser.add_argument('--num_classes', type=int,  default=6,
                     help='output channel of network')
 parser.add_argument(
     '--cfg', type=str, default="../code/configs/swin_tiny_patch4_window7_224_lite.yaml", help='path to config file', )
@@ -93,7 +93,7 @@ parser.add_argument('--throughput', action='store_true',
 # label and unlabel
 parser.add_argument('--labeled_bs', type=int, default=8,
                     help='labeled_batch_size per gpu')
-parser.add_argument('--labeled_num', type=int, default=7,
+parser.add_argument('--labeled_num', type=int, default=4,
                     help='labeled data')
 # costs
 parser.add_argument('--ema_decay', type=float,  default=0.99, help='ema_decay')
@@ -132,8 +132,14 @@ def patients_to_slices(dataset, patiens_num):
     if "ACDC" in dataset:
         ref_dict = {"3": 68, "7": 136,
                     "14": 256, "21": 396, "28": 512, "35": 664, "140": 1312}
-    elif "Prostate":
+    elif "Prostate" in dataset:
         ref_dict = {"2": 27, "4": 53, "8": 120,
+                    "12": 179, "16": 256, "21": 312, "42": 623}
+    elif "LA" in dataset:
+        ref_dict = {"2": 27, "4": 53, "8": 704,
+                    "12": 179, "16": 256, "21": 312, "42": 623}
+    elif "BCV" in dataset:
+        ref_dict = {"2": 27, "4": 569, "8": 704,
                     "12": 179, "16": 256, "21": 312, "42": 623}
     else:
         print("Error")
@@ -175,7 +181,9 @@ def train(args, snapshot_path):
     def worker_init_fn(worker_id):
         random.seed(args.seed + worker_id)
 
-    db_train = BaseDataSets(base_dir=args.root_path, split="train", num=None, transform=transforms.Compose([
+    db_train = BaseDataSets(base_dir=args.root_path, 
+                            split="train", num=None, 
+                            transform=transforms.Compose([
         RandomGenerator(args.patch_size)
     ]))
     db_val = BaseDataSets(base_dir=args.root_path, split="val")
@@ -357,13 +365,6 @@ def train(args, snapshot_path):
                     'iteration %d : model2_mean_dice : %f model2_mean_hd95 : %f' % (iter_num, performance2, mean_hd952))
                 model2.train()
 
-            # change lr
-            if iter_num % 2500 == 0:
-                lr_ = base_lr * 0.1 ** (iter_num // 2500)
-                for param_group in optimizer1.param_groups:
-                    param_group['lr'] = lr_
-                for param_group in optimizer2.param_groups:
-                    param_group['lr'] = lr_
             if iter_num % 3000 == 0:
                 save_mode_path = os.path.join(
                     snapshot_path, 'model1_iter_' + str(iter_num) + '.pth')
@@ -401,10 +402,10 @@ if __name__ == "__main__":
         args.exp, args.labeled_num, args.model)
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
-    if os.path.exists(snapshot_path + '/code'):
-        shutil.rmtree(snapshot_path + '/code')
-    shutil.copytree('.', snapshot_path + '/code',
-                    shutil.ignore_patterns(['.git', '__pycache__']))
+    # if os.path.exists(snapshot_path + '/code'):
+    #     shutil.rmtree(snapshot_path + '/code')
+    # shutil.copytree('.', snapshot_path + '/code',
+    #                 shutil.ignore_patterns(['.git', '__pycache__']))
 
     logging.basicConfig(filename=snapshot_path+"/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')

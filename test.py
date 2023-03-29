@@ -24,6 +24,8 @@ from glob import glob
 from networks.net_factory_3d import net_factory_3d
 from batchgenerators.utilities.file_and_folder_operations import save_json
 
+task_name_id_dict={"full":0,"spleen":1,"kidney":2,"liver":4,"pancreas":5,
+                   "heart":0}
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str,
                     default='test_config_new.yaml', 
@@ -32,7 +34,7 @@ parser.add_argument('--config', type=str,
 parser.add_argument('--gpu', type=str, default='0',help='gpu id for testing')
 parser.add_argument(
     '--model_path', type=str,
-    default='/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/model/LA_8_C3PS_model1_first_SGD_SGD/unet_3D_old/model_iter_10600_dice_0.8908.pth',
+    default='/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/model/BCV_500_CVCL_partial_test_vnet_cvcl_SGD_SGD/vnet/model_iter_18000_dice_0.8605.pth',
     help='model path for testing'
 )
 
@@ -43,8 +45,8 @@ class_id_name_dict = {
     'LA':['LA']
 }
 
-def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1, 
-                     condition=-1, method='regular'):
+def test_single_case(net, image, stride_x,stride_y, stride_z, patch_size, 
+                     num_classes=1, condition=-1, method='regular'):
     w, h, d = image.shape
 
     # if the size of image is less than patch_size, then padding it
@@ -72,17 +74,17 @@ def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1,
                                (dl_pad, dr_pad)], mode='constant', constant_values=0)
     ww, hh, dd = image.shape
 
-    sx = math.ceil((ww - patch_size[0]) / stride_xy) + 1
-    sy = math.ceil((hh - patch_size[1]) / stride_xy) + 1
+    sx = math.ceil((ww - patch_size[0]) / stride_x) + 1
+    sy = math.ceil((hh - patch_size[1]) / stride_y) + 1
     sz = math.ceil((dd - patch_size[2]) / stride_z) + 1
-    print(f"img shape:{image.shape}, sx:{sx}, sy:{sy}, sz:{sz}")
+    print(f"img shape:{image.shape}")
     score_map = np.zeros((num_classes, ) + image.shape).astype(np.float32)
     cnt = np.zeros(image.shape).astype(np.float32)
 
     for x in range(0, sx):
-        xs = min(stride_xy*x, ww-patch_size[0])
+        xs = min(stride_x*x, ww-patch_size[0])
         for y in range(0, sy):
-            ys = min(stride_xy * y, hh-patch_size[1])
+            ys = min(stride_y * y, hh-patch_size[1])
             for z in range(0, sz):
                 zs = min(stride_z * z, dd-patch_size[2])
                 test_patch = image[xs:xs+patch_size[0],
@@ -135,21 +137,22 @@ def cal_metric(gt, pred, cal_hd95=False, cal_asd=False, spacing=None):
     if pred.sum() > 0 and gt.sum() > 0:
         dice = metric.binary.dc(pred, gt)
         if cal_hd95:
-            hd95 = metric.binary.hd95(pred, gt, voxelspacing=spacing)
+            hd95 = metric.binary.hd95(pred, gt)
         else:
             hd95 = 0.0
         if cal_asd:
-            asd = metric.binary.asd(pred, gt, voxelspacing=spacing)
+            asd = metric.binary.asd(pred, gt)
         else:
             asd = 0.0
         return np.array([dice, hd95, asd])
     else:
-        return np.zeros(3)
+        return np.array([0.0, 150, 150])
 
 
 
 def test_all_case_BCV(net, test_list="full_test.list", num_classes=4, 
-                      patch_size=(48, 160, 160), stride_xy=32, stride_z=24, 
+                      patch_size=(48, 160, 160), stride_x=32, 
+                      stride_y=32, stride_z=24, 
                       condition=-1,method="regular",cal_hd95=False,
                       cal_asd=False,cut_lower=-68, cut_upper=200, 
                       save_prediction=False,prediction_save_path='./',
@@ -184,10 +187,23 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
         spacing = image_sitk.GetSpacing()
         image = sitk.GetArrayFromImage(image_sitk)
         label = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
+        task_name = 'full'
+        if len(img_name.split("_")) >1:
+            task_name = img_name.split("_")[0]
+        task_id = task_name_id_dict[task_name]
+        print("task_id:",task_id)
+        image = sitk.GetArrayFromImage(sitk.ReadImage(image_path))
+        label = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
+        if task_id > 0 and task_id !=2:
+            label[label!=0] = task_id
+        if task_id == 2:
+            label[label==2] = 3
+            label[label==1] = 2
         np.clip(image,cut_lower,cut_upper,out=image)
         image = (image - image.mean()) / image.std()
+        print(f"image shape:{image.shape}, mean:{image.mean()}, max:{image.max()}")
         prediction = test_single_case(
-            net, image, stride_xy, stride_z, patch_size, 
+            net, image, stride_x,stride_y,stride_z,patch_size, 
             num_classes=num_classes, condition=condition, method=method)
         
         each_metric = np.zeros((num_classes-1, 3))
@@ -256,7 +272,7 @@ if __name__ == '__main__':
     cut_upper = dataset_config['cut_upper']
     cut_lower = dataset_config['cut_lower']
 
-    pred_save_path = "{}/Prediction/".format(root_path)
+    pred_save_path = "{}/Prediction_full_stridexy40_stridez24/".format(root_path)
     if os.path.exists(pred_save_path):
         shutil.rmtree(pred_save_path)
     os.makedirs(pred_save_path)
@@ -264,7 +280,8 @@ if __name__ == '__main__':
                                 class_num=dataset_config['num_classes'],
                                 model_config=config['model'])
     model.load_state_dict(torch.load(model_path, map_location="cuda:0"))  
-    test_list = dataset_config['test_list']
+    #test_list = dataset_config['test_list']
+    test_list = '/data/liupeng/semi-supervised_segmentation/3D_U-net_baseline/datasets/test_full.txt'
     patch_size = config['DATASET']['patch_size']
     model = model.cuda()
     model.eval()
@@ -273,9 +290,10 @@ if __name__ == '__main__':
                         test_list=test_list,
                         num_classes=dataset_config['num_classes'], 
                         patch_size=patch_size,
-                        stride_xy=64, 
-                        stride_z=64,
-                        cal_hd95=True,
+                        stride_x=48, 
+                        stride_y=80,
+                        stride_z=80,
+                        cal_hd95=False,
                         cal_asd=True,
                         cut_upper=cut_upper,
                         cut_lower=cut_lower,

@@ -175,6 +175,12 @@ class VNet(nn.Module):
         self.out_conv = nn.Conv3d(n_filters, n_classes, 1, padding=0)
 
         self.dropout = nn.Dropout3d(p=0.5, inplace=False)
+        # self.project = nn.Sequential(
+        #         nn.Conv3d(128, 128, kernel_size=1, stride=1),
+        #         nn.InstanceNorm3d(128),
+        #         nn.ReLU(inplace=True),
+        #         nn.Conv3d(128, 64, kernel_size=1, stride=1)
+        #     ) #projector to get the contrastive leraning feature
         # self.__init_weight()
 
     def encoder(self, input):
@@ -225,7 +231,7 @@ class VNet(nn.Module):
         if self.has_dropout:
             x9 = self.dropout(x9)
         out = self.out_conv(x9)
-        return out
+        return out,x5_up
 
 
     def forward(self, input, turnoff_drop=False):
@@ -233,10 +239,13 @@ class VNet(nn.Module):
             has_dropout = self.has_dropout
             self.has_dropout = False
         features = self.encoder(input)
-        out = self.decoder(features)
+        # for fea in features:
+        #     print("feature shape: ", fea.shape)
+        out,cl_outputs = self.decoder(features)
         if turnoff_drop:
             self.has_dropout = has_dropout
-        return out
+        #return out,F.normalize(self.project(cl_outputs), 2, 1)
+        return out,features[0]
 
     # def __init_weight(self):
     #     for m in self.modules():
@@ -249,8 +258,12 @@ if __name__ == '__main__':
     # compute FLOPS & PARAMETERS
     from thop import profile
     from thop import clever_format
+    from torchsummary import summary
+    from torchstat import stat
     model = VNet(n_channels=1, n_classes=2)
-    input = torch.randn(4, 1, 112, 112, 80)
+    input = torch.randn(4, 1, 96, 160, 160)
+    summary(model.cuda(), (1, 96, 160, 160), device="cuda")
+    stat(model.cuda(), (1, 96, 160, 160))
     flops, params = profile(model, inputs=(input,))
     print(flops, params)
     macs, params = clever_format([flops, params], "%.3f")

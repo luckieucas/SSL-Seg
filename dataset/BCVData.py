@@ -10,11 +10,17 @@ import os
 import random
 import torch
 from torch.utils.data import Dataset as dataset
+from torch.utils.data import DataLoader
 import numpy as np  
 import SimpleITK as sitk
 from tqdm import tqdm
 from collections import Counter
 import torch.nn.functional as F
+from batchgenerators.augmentations.utils import pad_nd_image
+try:
+    from sampler import BatchSampler,ClassRandomSampler
+except:
+    from dataset.sampler import BatchSampler,ClassRandomSampler
 
 try:
     from data_augmentation import (
@@ -24,7 +30,8 @@ except:
     from dataset.data_augmentation import (
         rotation, affine_transformation, random_cutout, random_rotate_flip
     )
-
+task_name_id_dict={"full":0,"spleen":1,"kidney":2,"liver":4,
+                   "pancreas":5, 'heart':0}
 class BCVDataset(dataset):
     def __init__(self, img_list_file, patch_size, labeled_num, 
                      cutout=False, affine_trans=False, 
@@ -200,6 +207,11 @@ class BCVDatasetCAC(dataset):
 
         """get task name"""
         _,img_name = os.path.split(img_path)
+        task_name = "full"
+        if len(img_name.split("_")) >1:
+            task_name = img_name.split("_")[0]
+        task_id = task_name_id_dict[task_name]
+        
         """read image and mask"""
         image = sitk.ReadImage(img_path)
         img_array = sitk.GetArrayFromImage(image)
@@ -253,6 +265,13 @@ class BCVDatasetCAC(dataset):
         
         """ get one hot of mask"""
         mask_array = torch.FloatTensor(mask_array).unsqueeze(0)
+        #print(f"unique value:{mask_array.unique()}")
+        if task_id > 0 and task_id !=2:
+            mask_array[mask_array!=0] = task_id
+        if task_id == 2:
+            mask_array[mask_array==2] = 3
+            mask_array[mask_array==1] = 2
+        #print(f"img name:{img_name},task_name:{task_name},task id:{task_id},unique value:{mask_array.unique()}")
         gt_onehot = torch.zeros((self.num_class, mask_array.shape[1], mask_array.shape[2],mask_array.shape[3]))
         gt_onehot.scatter_(0, mask_array.long(), 1)
         mask_array = gt_onehot     
@@ -458,7 +477,7 @@ class BCVDatasetCAC(dataset):
         sample = {'image': img_array, 'label': mask_array.long(), 'ul1': ul1, 
                   'br1': br1, 'ul2': ul2, 'br2': br2, 
                   'condition': condition_each_volume.long(),
-                  'img_path':img_path}
+                  'img_path':img_path,'task_id':task_id}
         return sample
 
     def __len__(self):
@@ -530,35 +549,8 @@ class DatasetSR(dataset):
             
         """ padding image """
         img_shape = img_array.shape
-        if img_shape[0]< self.patch_size_large[0]:
-            #need to extend data
-            gap = self.patch_size_large[0]-img_shape[0]
-            img_array_extend = np.zeros((self.patch_size_large[0], img_shape[1], img_shape[2]))
-            mask_array_extend = np.zeros((self.patch_size_large[0], img_shape[1], img_shape[2]))
-            img_array_extend[gap//2:gap//2+img_shape[0],:,:] = img_array
-            mask_array_extend[gap//2:gap//2+img_shape[0],:,:] = mask_array
-            img_array = img_array_extend
-            mask_array = mask_array_extend
-        img_shape = img_array.shape
-        if img_shape[1]< self.patch_size_large[1]:
-                #need to extend data
-            gap = self.patch_size_large[1]-img_shape[1]
-            img_array_extend = np.zeros(( img_shape[0], self.patch_size_large[1],img_shape[2]))
-            mask_array_extend = np.zeros(( img_shape[0], self.patch_size_large[1], img_shape[2]))
-            img_array_extend[:,gap//2:gap//2+img_shape[1],:] = img_array
-            mask_array_extend[:,gap//2:gap//2+img_shape[1],:] = mask_array
-            img_array = img_array_extend
-            mask_array = mask_array_extend
-        img_shape = img_array.shape
-        if img_shape[2]< self.patch_size_large[2]:
-                    #need to extend data
-            gap = self.patch_size_large[2]-img_shape[2]
-            img_array_extend = np.zeros(( img_shape[0],img_shape[1], self.patch_size_large[2]))
-            mask_array_extend = np.zeros(( img_shape[0], img_shape[1], self.patch_size_large[2]))
-            img_array_extend[:,:,gap//2:gap//2+img_shape[2]] = img_array
-            mask_array_extend[:,:,gap//2:gap//2+img_shape[2]] = mask_array
-            img_array = img_array_extend
-            mask_array = mask_array_extend
+        img_array = pad_nd_image(img_array,self.patch_size_large)
+        mask_array = pad_nd_image(mask_array,self.patch_size_large)
         # 将灰度值在阈值之外的截断掉
         np.clip(img_array, self.lower, self.upper, out=img_array)
         """Normalize the image"""
@@ -788,51 +780,61 @@ if __name__ == '__main__':
     """
     test dataset class 
     """
-    train_file_list = "../../data/BCV/train.txt"
+    train_file_list = "../../data/BCV/train_cvcl.txt"
     # db_train = BCVDataset(img_list_file=train_file_list,
     #                         patch_size=(96,160,160),
     #                         labeled_num=4,
     #                         num_class=6)
     
-    # db_train = BCVDatasetCAC(
-    #             img_list_file=train_file_list, 
-    #             patch_size=(96,160,160), 
-    #             num_class=6, 
-    #             stride=8, 
-    #             iou_bound=[0.3,0.95],
-    #             labeled_num=4,
-    #             cutout=True,
-    #             rotate_trans=True,
-    #             con_list=[2,3,5],
-    #             weights=[0.2,0.2,0.2,0.1,0.3]
-    #         )
-    db_train = DatasetSR(
+    db_train = BCVDatasetCAC(
                 img_list_file=train_file_list, 
+                patch_size=(96,160,160), 
                 num_class=6, 
                 stride=8, 
-                iou_bound=[0.2,1.01],
-                labeled_num=4,
+                iou_bound=[0.3,0.95],
+                labeled_num=500,
                 cutout=True,
                 rotate_trans=True,
                 con_list=[2,3,5],
                 addi_con_list=[8],
                 weights=[0.2,0.2,0.2,0.1,0.3]
-    )
+            )
+    # db_train = DatasetSR(
+    #             img_list_file=train_file_list, 
+    #             num_class=6, 
+    #             stride=8, 
+    #             iou_bound=[0.2,1.01],
+    #             labeled_num=4,
+    #             cutout=True,
+    #             rotate_trans=True,
+    #             con_list=[2,3,5],
+    #             addi_con_list=[8],
+    #             weights=[0.2,0.2,0.2,0.1,0.3]
+    # )
+    dataloader = DataLoader(db_train, 
+                                batch_sampler = BatchSampler(
+                                    ClassRandomSampler(db_train), 
+                                    2, True), 
+                                num_workers=2, pin_memory=True)
     con_list =[0]*5
     con_vol_list = [0]*5
-    for data_batch in tqdm(db_train):
+    for data_batch in tqdm(dataloader):
+        task_id = data_batch['task_id']
+        img_path = data_batch['img_path']
+        print(f'task_id:{task_id},image path:{img_path}')
+        continue
         #img_path, = data_batch['img_path'], 
-        image_large,label_large = data_batch['image_large'], data_batch['label_large']
-        image_small,label_small = data_batch['image_small'], data_batch['label_small']
+        #image_large,label_large = data_batch['image_large'], data_batch['label_large']
+        #image_small,label_small = data_batch['image_small'], data_batch['label_small']
         #condition = data_batch['condition']
         #print(f"con shape:{condition.shape}")
-        print(f"label large shape:{label_large.shape}")
-        print(f"label small shape:{label_small.shape}")
-        print(f"image large shape:{image_large.shape}")
-        print(f"image small shape:{image_small.shape}")
-        ul1,br1,ul2,br2 = data_batch['ul1'], data_batch['br1'], data_batch['ul2'], data_batch['br2']
-        target1_overlap = label_large[ ul1[0]:br1[0], ul1[1]:br1[1], ul1[2]:br1[2]]
-        target2_overlap = label_small[ ul2[0]:br2[0], ul2[1]:br2[1], ul2[2]:br2[2]]
+        # print(f"label large shape:{label_large.shape}")
+        # print(f"label small shape:{label_small.shape}")
+        # print(f"image large shape:{image_large.shape}")
+        # print(f"image small shape:{image_small.shape}")
+        # ul1,br1,ul2,br2 = data_batch['ul1'], data_batch['br1'], data_batch['ul2'], data_batch['br2']
+        # target1_overlap = label_large[ ul1[0]:br1[0], ul1[1]:br1[1], ul1[2]:br1[2]]
+        # target2_overlap = label_small[ ul2[0]:br2[0], ul2[1]:br2[1], ul2[2]:br2[2]]
         #assert (target1_overlap!=target2_overlap).sum() == 0,"error"
         # print("image shape:", image.shape)
         # print("conditon:",condition)

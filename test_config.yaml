@@ -1,6 +1,6 @@
-exp: C3PS_effectofsemi_finetune_lr0001
+exp: vnet_cvcl
 method: C3PS # use which semi-supervised method [MT,EM,CCPS,DAN]
-backbone: unet_3D # backbone model
+backbone: vnet # backbone model
 gpu: '3,4'
 root_path: '../data/BraTS2019'
 continue_training: True

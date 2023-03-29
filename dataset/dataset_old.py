@@ -10,6 +10,7 @@ from scipy.ndimage.interpolation import zoom
 import itertools
 from scipy import ndimage
 from torch.utils.data.sampler import Sampler
+import SimpleITK as sitk
 
 
 class BaseDataSets(Dataset):
@@ -40,7 +41,7 @@ class BaseDataSets(Dataset):
         case = self.sample_list[idx]
         if self.split == "train":
             h5f = h5py.File(self._base_dir +
-                            "/data/slices/{}.h5".format(case), 'r')
+                            "/slices/{}".format(case), 'r')
         else:
             h5f = h5py.File(self._base_dir + "/data/{}.h5".format(case), 'r')
         image = h5f['image'][:]
@@ -50,6 +51,49 @@ class BaseDataSets(Dataset):
             sample = self.transform(sample)
         sample["idx"] = idx
         return sample
+
+class BaseDataSets2D(Dataset):
+    def __init__(self, img_list_file=None, split='train', labeled_num=None, transform=None):
+        self.sample_list = []
+        self.split = split
+        self.transform = transform
+        self.labeled_num = labeled_num
+        with open(img_list_file, 'r') as f:
+            self.img_list = [img.replace("\n","") for img in f.readlines()]
+        
+        if labeled_num is not None and self.split == "train":
+            self.img_list = self.img_list[:labeled_num]
+        print("total {} samples".format(len(self.img_list)))
+
+    def __len__(self):
+        return len(self.img_list)
+
+    def __getitem__(self, index):
+        if len(self.img_list[index].strip().split()) > 1:
+            img_path, mask_path = self.img_list[index].strip().split()
+        else:
+            img_path = self.img_list[index]
+            mask_path = img_path.replace("img","label")
+        if index < self.labeled_num:
+            assert os.path.isfile(mask_path),f"invalid mask path: {mask_path},index:{index}!"
+
+        """get task name"""
+        _,img_name = os.path.split(img_path)
+        """read image and mask"""
+        image = sitk.ReadImage(img_path)
+        img_array = sitk.GetArrayFromImage(image)
+        if index < self.labeled_num: 
+            mask = sitk.ReadImage(mask_path)
+            mask_array = sitk.GetArrayFromImage(mask)
+        else:
+            mask_array = np.zeros_like(img_array)
+        mask_array = mask_array.astype(np.uint8)
+        sample = {'image': img_array, 'label': mask_array}
+        if self.split == "train":
+            sample = self.transform(sample)
+        sample["idx"] = index
+        return sample
+
 
 
 def random_rot_flip(image, label):

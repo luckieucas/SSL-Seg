@@ -19,6 +19,7 @@ import numpy as np
 from utils import losses,ramps,cac_loss
 from dataset.BCVData import BCVDataset, BCVDatasetCAC,DatasetSR
 from dataset.dataset import DatasetSemi
+from dataset.sampler import BatchSampler, ClassRandomSampler
 from networks.net_factory_3d import net_factory_3d
 from dataset.dataset import TwoStreamBatchSampler
 from val_3D import test_all_case,test_all_case_BCV
@@ -241,7 +242,7 @@ class SemiSupervisedTrainer:
                                         labeled_num=self.labeled_num,
                                         train_supervised=train_supervised,
                                         normalization=self.normalization)
-        if self.method_name in ['C3PS','ConNet','CVCL']:
+        if self.method_name in ['C3PS','ConNet','CVCL','CVCL_partial']:
             self.dataset = BCVDatasetCAC(
                 img_list_file=self.train_list,
                 patch_size=self.patch_size,
@@ -362,6 +363,24 @@ class SemiSupervisedTrainer:
             print(f"max epochs:{self.max_epoch}, max iterations:{self.max_iterations}")
             print(f"len dataloader:{len(self.dataloader)}")
             self._train_baseline()
+        elif self.method_name == 'CVCL_partial':
+            self.dataloader = DataLoader(self.dataset, 
+                                         batch_sampler = BatchSampler(
+                                            ClassRandomSampler(self.dataset), 
+                                            self.batch_size, True), 
+                                         num_workers=2, pin_memory=True)
+            self.max_epoch = self.max_iterations // len(self.dataloader) + 1
+            self.cvcl_loss = cac_loss.CAC(
+                self.num_classes, 
+                stride=self.method_config['stride'], 
+                selected_num=400, 
+                b = 500, 
+                step_save=self.method_config['step_save'], 
+                temp=0.1, proj_final_dim=64, 
+                pos_thresh_value=self.method_config['threshold'], 
+                weight=0.1
+            )
+            self._train_CVCL_partial()      
         else:           
             batch_sampler = TwoStreamBatchSampler(self.labeled_idxs, 
                                             self.unlabeled_idxs,
@@ -406,7 +425,7 @@ class SemiSupervisedTrainer:
                     pos_thresh_value=self.method_config['threshold'], 
                     weight=0.1
                 )
-                self._train_CVCL()
+                self._train_CVCL()      
             elif self.method_name == 'CSSR':
                 self._train_CSSR()
             else:
@@ -1561,7 +1580,150 @@ class SemiSupervisedTrainer:
             inter_label_list = self.method_config['con_list']
         con = np.random.choice(inter_label_list)
         return con
- 
+
+    def _train_CVCL_partial(self):
+        print("===========> Training CVCL for partially labeled data<========")   
+        iterator = tqdm(range(20000), ncols=70)
+        iter_each_epoch = len(self.dataloader)
+        for epoch_num in iterator:
+            for i_batch, sampled_batch in enumerate(self.dataloader):
+                self._adjust_learning_rate()  
+                self.model.train() 
+                volume_batch, label_batch = (
+                    sampled_batch['image'],sampled_batch['label']
+                )
+                task_id = sampled_batch['task_id']
+                volume_batch, label_batch = (volume_batch.to(self.device), 
+                                             label_batch.to(self.device))
+                if self.current_iter<10000 and torch.sum(task_id)>0:
+                    print("==========>break for partial label data!")
+                    break
+                if torch.sum(task_id) != task_id[0]*len(task_id):
+                    continue
+                volume_batch = torch.cat(
+                    [volume_batch[:,0,...],volume_batch[:,1,...]],
+                    dim=0
+                )
+                label_batch = torch.cat(
+                    [label_batch[:,0,...],label_batch[:,1,...]],
+                    dim=0
+                )
+                noise1 = torch.clamp(
+                    torch.randn_like(volume_batch) * 0.1, 
+                    -0.2, 
+                    0.2
+                ).to(self.device)
+                outputs,CL_outputs = self.model(volume_batch + noise1)
+                print("task_id:",task_id)
+                outputs_soft1 = torch.softmax(outputs, dim=1)
+                # gt_onehot = torch.zeros((self.batch_size, self.num_class, self.patch_size[0], self.patch_size[1],self.patch_size[2]))
+                # gt_onehot.scatter_(0, label_batch[0].long(), 1)
+                # mask_array = gt_onehot     
+                if torch.sum(task_id)>0:
+                    #conbine partially labeled dataset
+                    # bg_class = [0,1,2,3,4,5]
+                    # bg_class.remove(task_id[0])
+                    # merge_mask= mask[:,[0,task_id[0]],:,:,:]
+                    # if task_id[0] == 2:
+                    #     bg_class.remove(task_id[0]+1)
+                    #     merge_mask= mask[:,[0,task_id[0], task_id[0]+1],:,:,:]
+                    # merge_output = torch.zeros_like(merge_mask)
+                    # merge_output[:,0,:,:,:] = torch.sum(output[:,bg_class,:,:,:],dim=1)
+                    # merge_output[:,1,:,:,:] = output[:,task_id[0],:,:,:]
+                    # if task_id[0] == 2:
+                    #     merge_output[:,2,:,:,:] = output[:,task_id[0]+1,:,:,:]
+                    # output = merge_output 
+                    # mask = merge_mask
+                    # label_batch[label_batch==0] = 255 
+                    # loss_ce = self.ce_loss(
+                    #         outputs,
+                    #         label_batch.long()
+                    #     )
+                    
+                    #label_batch[label_batch==255] = 0
+                    loss_dice = self.dice_loss(
+                            outputs_soft1,
+                            label_batch.unsqueeze(1),
+                            skip_id=0
+                        ) 
+                    loss_sup = loss_dice
+                else:
+                    loss_sup =  (
+                        self.ce_loss(
+                            outputs,
+                            label_batch.long()
+                        ) +
+                        self.dice_loss(
+                            outputs_soft1,
+                            label_batch.unsqueeze(1)
+                        )
+                    )
+                print(f"current iter:{self.current_iter}")
+                print(f"loss sup:{loss_sup.item()}")
+                loss_cl = torch.FloatTensor([0.0]).to(self.device)
+                if self.current_iter> self.began_semi_iter:
+                    loss_cl = self.cvcl_loss(
+                        output_ul1=CL_outputs[1:2], 
+                        output_ul2=CL_outputs[3:4], 
+                        logits1=outputs[1:2], 
+                        logits2=outputs[3:4], 
+                        ul1=[x[1] for x in sampled_batch['ul1']], 
+                        br1=[x[1] for x in sampled_batch['br1']], 
+                        ul2=[x[1] for x in sampled_batch['ul2']], 
+                        br2=[x[1] for x in sampled_batch['br2']]
+                    )
+                
+                loss = loss_sup + loss_cl
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                self.current_iter += 1
+                for param_group in self.optimizer.param_groups:
+                    self.current_lr = param_group['lr']
+                self.tensorboard_writer.add_scalar('lr', self.current_lr, 
+                                                   self.current_iter)
+                self.tensorboard_writer.add_scalar('loss/loss', 
+                                                   loss, 
+                                                   self.current_iter)
+                self.tensorboard_writer.add_scalar('loss/loss_sup', 
+                                                   loss_sup, 
+                                                   self.current_iter)
+                self.tensorboard_writer.add_scalar('loss/loss_cl', 
+                                    loss_cl, 
+                                    self.current_iter)
+                # self.tensorboard_writer.add_scalar(
+                #     'loss/pseudo_supervision1',
+                #     pseudo_supervision1, self.current_iter
+                # )
+                self.logging.info(
+                    'iteration %d:'
+                    ' loss: %f' 
+                    ' supvised loss: %f'
+                    ' CVCL loss: %f' % (
+                        self.current_iter, loss.item(), 
+                        loss_sup.item(), 
+                        loss_cl.item()
+                    )
+                )
+                if (self.current_iter > self.began_eval_iter and
+                    self.current_iter % self.val_freq == 0
+                ) or self.current_iter == 20:
+                    with torch.no_grad():
+                        self.evaluation(model=self.model)
+                    self.model.train()
+                if self.current_iter % self.save_checkpoint_freq == 0:
+                    save_model_path = os.path.join(
+                        self.output_folder,
+                        'model_iter_' + str(self.current_iter) + '.pth'
+                    )
+                    torch.save(self.model.state_dict(), save_model_path)
+                    self.logging.info(f"save model to {save_model_path}")
+                if self.current_iter >= self.max_iterations:
+                    break
+            if self.current_iter >= self.max_iterations:
+                iterator.close()
+                break    
+            
     def _train_CVCL(self):
         print("================> Training CVCL<===============")   
         iterator = tqdm(range(self.max_epoch), ncols=70)
@@ -2294,32 +2456,49 @@ class SemiSupervisedTrainer:
                                self.dice_loss(outputs_soft2[:self.labeled_bs], 
                                              label_large[:self.labeled_bs].\
                                                 unsqueeze(1)))
-                pseudo_outputs1 = torch.argmax(
-                    outputs_soft1[self.labeled_bs:].detach(),
-                    dim=1, keepdim=False
+                max_prob1,pseudo_outputs1 = torch.max(
+                    outputs_soft1[self.labeled_bs:].detach(), dim=1
                 )
-                pseudo_outputs2 = torch.argmax(
-                    outputs_soft2[self.labeled_bs:].detach(),
-                    dim=1, keepdim=False
+                #assert (pseudo_outputs1_old!=pseudo_outputs1).sum()==0,'error of pseudo mask1'
+                # filter the pseudo mask by max prob
+                filter1 = (
+                    ((max_prob1>0.99)&(pseudo_outputs1==0))|
+                    ((max_prob1>0.9)&(pseudo_outputs1!=0))
                 )
+                
+
+                max_prob2,pseudo_outputs2 = torch.max(
+                    outputs_soft2[self.labeled_bs:].detach(), dim=1
+                )
+                #assert (pseudo_outputs2_old!=pseudo_outputs2).sum()==0,'error of pseudo mask2'
+                # filter the pseudo mask by max prob
+                filter2 = (
+                    ((max_prob2>0.99)&(pseudo_outputs2==0))|
+                    ((max_prob2>0.9)&(pseudo_outputs2!=0))
+                )
+                
                 if self.current_iter < self.began_semi_iter:
                     pseudo_supervision1 = torch.FloatTensor([0]).to(self.device)
                     pseudo_supervision2 = torch.FloatTensor([0]).to(self.device)
                 else:
+                    pseudo_outputs2[filter2==0] = 255
                     pseudo_supervision1 = self.ce_loss(
                         outputs1[self.labeled_bs:,:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]],
                         pseudo_outputs2[:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]]
-                    ) + self.dice_loss(
-                        outputs1[self.labeled_bs:,:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]],
-                        pseudo_outputs2[:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]].unsqueeze(1)
-                    )
+                    ) 
+                    # + self.dice_loss(
+                    #     outputs1[self.labeled_bs:,:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]],
+                    #     pseudo_outputs2[:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]].unsqueeze(1)
+                    # )
+                    pseudo_outputs1[filter1==0] = 255
                     pseudo_supervision2 = self.ce_loss(
                         outputs2[self.labeled_bs:,:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]],
                         pseudo_outputs1[:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]]
-                    ) + self.dice_loss(
-                        outputs2[self.labeled_bs:,:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]],
-                        pseudo_outputs1[:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]].unsqueeze(1)
-                    )
+                    ) 
+                    # + self.dice_loss(
+                    #     outputs2[self.labeled_bs:,:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]],
+                    #     pseudo_outputs1[:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]].unsqueeze(1)
+                    # )
                 model1_loss = loss1 + self.consistency_weight *  \
                                       pseudo_supervision1
                 model2_loss = loss2 + self.consistency_weight * \
@@ -2381,6 +2560,13 @@ class SemiSupervisedTrainer:
                 iterator.close()
                 break
         self.tensorboard_writer.close()
+    
+    def _train_EMSSL(self):
+        """
+        code for "Bayesian Pseudo Labels: Expectation Maximization for Robust
+        and Efficient Semi-supervised Segmentation"
+        """
+        print("================> Training EMSSL<===============")
     
     def _train_ConditionNet(self):
         print("================> Training ConditionNet<===============")   

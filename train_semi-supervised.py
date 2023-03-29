@@ -27,8 +27,6 @@ from utils.util import save_config
 
 
 
-
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str,
                     default='train_config.yaml', help='training configuration')

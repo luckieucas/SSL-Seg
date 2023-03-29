@@ -57,7 +57,7 @@ class unet_3D_sr(nn.Module):
         self.up_concat1 = UnetUp3_CT(filters[1], filters[0], is_batchnorm)
 
         # final conv (without any concat)
-        self.up_sample = nn.Upsample(scale_factor=(1.5, 1.6, 2), mode='trilinear')
+        self.up_sample = nn.Upsample(scale_factor=(1.334, 1.3, 1.8), mode='trilinear')
         self.final = nn.Conv3d(filters[0], n_classes, 1)
 
         self.dropout1 = nn.Dropout(p=0.3)
