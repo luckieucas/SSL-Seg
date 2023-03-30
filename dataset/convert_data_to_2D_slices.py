@@ -13,7 +13,7 @@ parser.add_argument("--img_list",type=str,
                     default='/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/BCV/train.txt', 
                     help='image file list txt file')
 
-def convert_h5_file(args):
+def convert_h5_file(args,cut_lower=None,cut_upper=None):
     with open(args.img_list, 'r') as f:
         img_list = [line.replace("\n","").strip() for line in f.readlines()]
     slice_num = 0
@@ -34,6 +34,8 @@ def convert_h5_file(args):
         if os.path.exists(mask_path):
             msk_itk = sitk.ReadImage(mask_path)
             mask = sitk.GetArrayFromImage(msk_itk)
+            if cut_lower:
+                np.clip(image,cut_lower,cut_upper)
             image = (image - image.min()) / (image.max() - image.min())
             print(image.shape)
             image = image.astype(np.float32)
@@ -49,7 +51,7 @@ def convert_h5_file(args):
     print("Converted all ACDC volumes to h5 file")
     print("Total {} slices".format(slice_num))
 
-def convert_2d_slices(args):
+def convert_2d_slices(args,cut_lower=None,cut_upper=None):
     with open(args.img_list, 'r') as f:
         img_list = [line.replace("\n","").strip() for line in f.readlines()]
     slice_num = 0
@@ -70,7 +72,9 @@ def convert_2d_slices(args):
         if os.path.exists(mask_path):
             msk_itk = sitk.ReadImage(mask_path)
             mask = sitk.GetArrayFromImage(msk_itk)
-            image = (image - image.min()) / (image.max() - image.min())
+            if cut_lower:
+                np.clip(image,cut_lower,cut_upper)
+            image = (image - image.mean()) / image.std()
             print(image.shape)
             image = image.astype(np.float32)
             item = case.split("/")[-1].split(".")[0].split("_")[0]
@@ -113,8 +117,8 @@ def generate_train_test_list_file(args,is_train=True):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    args.save_path = "/data/liupeng/semi-supervised_segmentation/nnUNetFrame/DATASET/nnUNet_raw/nnUNet_raw_data/Task11_BCV/Training/slices/"
+    args.save_path = "/data/liupeng/semi-supervised_segmentation/nnUNetFrame/DATASET/nnUNet_raw/nnUNet_raw_data/Task11_BCV/Training/data/"
     #main(args)
-    generate_train_test_list_file(args,True)
-    #convert_h5_file(args)
-    #convert_2d_slices(args)
+    #generate_train_test_list_file(args,True)
+    #convert_h5_file(args,-125,275)
+    convert_2d_slices(args,-125,275)
