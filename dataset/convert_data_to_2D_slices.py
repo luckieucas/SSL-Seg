@@ -36,7 +36,7 @@ def convert_h5_file(args,cut_lower=None,cut_upper=None):
             mask = sitk.GetArrayFromImage(msk_itk)
             if cut_lower:
                 np.clip(image,cut_lower,cut_upper,out=image)
-            image = (image - image.min()) / (image.max() - image.min())
+            image = (image - image.mean()) / image.std()
             print(image.shape)
             image = image.astype(np.float32)
             item = case.split("/")[-1].split(".")[0].split("_")[0]
