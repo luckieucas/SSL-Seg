@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--img_list",type=str,
-                    default='/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/BCV/train.txt', 
+                    default='/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/BCV/test.txt', 
                     help='image file list txt file')
 
 def convert_h5_file(args,cut_lower=None,cut_upper=None):
@@ -35,7 +35,7 @@ def convert_h5_file(args,cut_lower=None,cut_upper=None):
             msk_itk = sitk.ReadImage(mask_path)
             mask = sitk.GetArrayFromImage(msk_itk)
             if cut_lower:
-                np.clip(image,cut_lower,cut_upper)
+                np.clip(image,cut_lower,cut_upper,out=image)
             image = (image - image.min()) / (image.max() - image.min())
             print(image.shape)
             image = image.astype(np.float32)
@@ -73,7 +73,7 @@ def convert_2d_slices(args,cut_lower=None,cut_upper=None):
             msk_itk = sitk.ReadImage(mask_path)
             mask = sitk.GetArrayFromImage(msk_itk)
             if cut_lower:
-                np.clip(image,cut_lower,cut_upper)
+                np.clip(image,cut_lower,cut_upper,out=image)
             image = (image - image.mean()) / image.std()
             print(image.shape)
             image = image.astype(np.float32)
@@ -120,5 +120,5 @@ if __name__=="__main__":
     args.save_path = "/data/liupeng/semi-supervised_segmentation/nnUNetFrame/DATASET/nnUNet_raw/nnUNet_raw_data/Task11_BCV/Training/data/"
     #main(args)
     #generate_train_test_list_file(args,True)
-    #convert_h5_file(args,-125,275)
-    convert_2d_slices(args,-125,275)
+    convert_h5_file(args,-125,275)
+    #convert_2d_slices(args,-125,275)
