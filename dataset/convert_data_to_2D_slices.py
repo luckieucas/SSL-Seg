@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--img_list",type=str,
-                    default='/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/BCV/test.txt', 
+                    default='/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/MMWHS/MMWHS_test.txt', 
                     help='image file list txt file')
 
 def convert_h5_file(args,cut_lower=None,cut_upper=None):
@@ -19,6 +19,7 @@ def convert_h5_file(args,cut_lower=None,cut_upper=None):
     slice_num = 0
     
     for case in tqdm(img_list):
+        print(f"processing:{case}")
         if len(case.split())>1:
             image_path = case.split()[0]
             mask_path = case.split()[1]
@@ -39,7 +40,9 @@ def convert_h5_file(args,cut_lower=None,cut_upper=None):
             image = (image - image.mean()) / image.std()
             print(image.shape)
             image = image.astype(np.float32)
-            item = case.split("/")[-1].split(".")[0].split("_")[0]
+            mask = mask.astype(np.int)
+            item = case.split("/")[-1].split(".")[0].split("_crop")[0]
+            print("item:",item)
             if image.shape != mask.shape:
                 print("Error")
             f = h5py.File(
@@ -77,7 +80,7 @@ def convert_2d_slices(args,cut_lower=None,cut_upper=None):
             image = (image - image.mean()) / image.std()
             print(image.shape)
             image = image.astype(np.float32)
-            item = case.split("/")[-1].split(".")[0].split("_")[0]
+            item = case.split("/")[-1].split(".")[0].split("_crop")[0]
             print(item)
             if image.shape != mask.shape:
                 print("Error")
@@ -96,7 +99,7 @@ def generate_train_test_list_file(args,is_train=True):
     with open(args.img_list, 'r') as f:
         img_list = [line.replace("\n","").strip() for line in f.readlines()]
     slice_path = args.save_path
-    with open("train.list",'w') as f:
+    with open("test.list",'w') as f:
         for case in tqdm(img_list):
             if len(case.split())>1:
                 image_path = case.split()[0]
@@ -105,7 +108,7 @@ def generate_train_test_list_file(args,is_train=True):
                 image_path = case 
                 mask_path = case.replace("img","label")
             print(mask_path)
-            item = image_path.split("/")[-1].split("_")[0]
+            item = case.split("/")[-1].split(".")[0].split("_crop")[0]
             print(item)
             if is_train:
                 slice_list = glob.glob(slice_path+f"/{item}_slice_*")
@@ -117,8 +120,10 @@ def generate_train_test_list_file(args,is_train=True):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    args.save_path = "/data/liupeng/semi-supervised_segmentation/nnUNetFrame/DATASET/nnUNet_raw/nnUNet_raw_data/Task11_BCV/Training/data/"
+    args.save_path = "/data/liupeng/semi-supervised_segmentation/dataset/Task012_Heart/data/"
+    cut_lower = -200
+    cut_upper = 300
     #main(args)
-    #generate_train_test_list_file(args,True)
-    convert_h5_file(args,-125,275)
-    #convert_2d_slices(args,-125,275)
+    #generate_train_test_list_file(args,is_train=False)
+    convert_h5_file(args,-200,300)
+    #convert_2d_slices(args,cut_lower,cut_upper)

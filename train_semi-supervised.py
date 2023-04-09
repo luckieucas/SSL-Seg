@@ -20,7 +20,7 @@ from torchvision import transforms
 from torchvision.utils import make_grid
 from tensorboardX import SummaryWriter
 
-from trainer.semi_trainer import SemiSupervisedTrainer
+from trainer.semi_trainer_3D import SemiSupervisedTrainer
 from utils.util import save_config
 
 

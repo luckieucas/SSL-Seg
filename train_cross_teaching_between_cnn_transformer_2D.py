@@ -45,9 +45,9 @@ from val_2D import test_single_volume
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
-                    default='/data/liupeng/semi-supervised_segmentation/nnUNetFrame/DATASET/nnUNet_raw/nnUNet_raw_data/Task11_BCV/Training/', help='Name of Experiment')
+                    default='/data/liupeng/semi-supervised_segmentation/dataset/Task012_Heart', help='Name of Experiment')
 parser.add_argument('--exp', type=str,
-                    default='BCV/Cross_Teaching_Between_CNN_Transformer', help='experiment_name')
+                    default='MMWHS/Cross_Teaching_Between_CNN_Transformer', help='experiment_name')
 parser.add_argument('--model', type=str,
                     default='unet', help='model_name')
 parser.add_argument('--max_iterations', type=int,
@@ -61,7 +61,7 @@ parser.add_argument('--base_lr', type=float,  default=0.01,
 parser.add_argument('--patch_size', type=list,  default=[224, 224],
                     help='patch size of network input')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
-parser.add_argument('--num_classes', type=int,  default=6,
+parser.add_argument('--num_classes', type=int,  default=8,
                     help='output channel of network')
 parser.add_argument(
     '--cfg', type=str, default="../code/configs/swin_tiny_patch4_window7_224_lite.yaml", help='path to config file', )
@@ -93,7 +93,7 @@ parser.add_argument('--throughput', action='store_true',
 # label and unlabel
 parser.add_argument('--labeled_bs', type=int, default=8,
                     help='labeled_batch_size per gpu')
-parser.add_argument('--labeled_num', type=int, default=4,
+parser.add_argument('--labeled_num', type=int, default=2,
                     help='labeled data')
 # costs
 parser.add_argument('--ema_decay', type=float,  default=0.99, help='ema_decay')
@@ -140,6 +140,9 @@ def patients_to_slices(dataset, patiens_num):
                     "12": 179, "16": 256, "21": 312, "42": 623}
     elif "BCV" in dataset:
         ref_dict = {"2": 27, "4": 569, "8": 704,
+                    "12": 179, "16": 256, "21": 312, "42": 623}
+    elif "MMWHS" in dataset:
+        ref_dict = {"2": 567, "4": 569, "8": 704,
                     "12": 179, "16": 256, "21": 312, "42": 623}
     else:
         print("Error")
@@ -189,7 +192,7 @@ def train(args, snapshot_path):
     db_val = BaseDataSets(base_dir=args.root_path, split="val")
 
     total_slices = len(db_train)
-    labeled_slice = patients_to_slices(args.root_path, args.labeled_num)
+    labeled_slice = patients_to_slices(args.exp, args.labeled_num)
     print("Total silices is: {}, labeled slices is: {}".format(
         total_slices, labeled_slice))
     labeled_idxs = list(range(0, labeled_slice))
@@ -294,7 +297,7 @@ def train(args, snapshot_path):
                 labs = label_batch[1, ...].unsqueeze(0) * 50
                 writer.add_image('train/GroundTruth', labs, iter_num)
 
-            if iter_num > 0 and iter_num % 200 == 0:
+            if iter_num > 800 and iter_num % 200 == 0:
                 model1.eval()
                 metric_list = 0.0
                 for i_batch, sampled_batch in enumerate(valloader):
@@ -331,11 +334,11 @@ def train(args, snapshot_path):
                 model1.train()
 
                 model2.eval()
-                metric_list = 0.0
-                for i_batch, sampled_batch in enumerate(valloader):
-                    metric_i = test_single_volume(
-                        sampled_batch["image"], sampled_batch["label"], model2, classes=num_classes, patch_size=args.patch_size)
-                    metric_list += np.array(metric_i)
+                metric_list = np.zeros((num_classes,2))
+                # for i_batch, sampled_batch in enumerate(valloader):
+                #     metric_i = test_single_volume(
+                #         sampled_batch["image"], sampled_batch["label"], model2, classes=num_classes, patch_size=args.patch_size)
+                #     metric_list += np.array(metric_i)
                 metric_list = metric_list / len(db_val)
                 for class_i in range(num_classes-1):
                     writer.add_scalar('info/model2_val_{}_dice'.format(class_i+1),

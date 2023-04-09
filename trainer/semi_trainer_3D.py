@@ -6,7 +6,6 @@ import yaml
 import torch
 import torch.nn as nn
 from torch.optim import lr_scheduler
-from torchvision import transforms
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
 import torch.cuda.amp as amp
@@ -28,7 +27,7 @@ from unet3d.losses import DiceLoss #test loss
 
 
 
-class SemiSupervisedTrainerBase:
+class SemiSupervisedTrainer:
     def __init__(self, config, output_folder, logging) -> None:
         self.config = config
         self.device = torch.device(f"cuda:{config['gpu']}")
@@ -324,7 +323,7 @@ class SemiSupervisedTrainerBase:
                                           weight_decay=self.weight_decay,
                                           amsgrad=True)
         
-        if self.method_name in ['CPS', 'C3PS', 'ConNet', 'CSSR', 'CTCT']:
+        if self.method_name in ['CPS', 'C3PS', 'ConNet', 'CSSR']:
             self.scaler2 = amp.GradScaler()
             if self.optimizer2_type == 'Adam':
                 self.optimizer2 = torch.optim.Adam(
@@ -2567,13 +2566,6 @@ class SemiSupervisedTrainerBase:
         and Efficient Semi-supervised Segmentation"
         """
         print("================> Training EMSSL<===============")
-    
-    def _train_CTCT(self):
-        """
-        code for "Semi-Supervised Medical Image Segmentation via Cross Teaching 
-        between CNN and Transformer"
-        """
-        print("================> Training CTCT<===============")
     
     def _train_ConditionNet(self):
         print("================> Training ConditionNet<===============")   
