@@ -16,6 +16,7 @@ import wandb
 from tqdm import tqdm
 import numpy as np
 import argparse
+from scipy.ndimage import zoom
 
 from utils import losses,ramps,cac_loss
 from dataset.BCVData import BCVDataset, BCVDatasetCAC,DatasetSR
@@ -25,7 +26,7 @@ from networks.net_factory_3d import net_factory_3d
 from dataset.dataset import TwoStreamBatchSampler
 from dataset.dataset_old import (BaseDataSets, RandomGenerator,
                                  TwoStreamBatchSampler)
-from semi_trainer import SemiSupervisedTrainerBase
+from trainer.semi_trainer import SemiSupervisedTrainerBase
 from networks.net_factory import net_factory
 from networks.vision_transformer import SwinUnet as ViT_seg
 from config import get_config
@@ -42,6 +43,17 @@ class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
         parser = argparse.ArgumentParser()
         args = parser.parse_args()
         args.cfg = "../code/configs/swin_tiny_patch4_window7_224_lite.yaml"
+        args.opts = None
+        args.batch_size = self.batch_size
+        args.zip = True
+        args.resume = self.continue_training
+        args.cache_mode = self.method_config['cache_mode']
+        args.accumulation_steps = self.method_config['accumulation_steps']
+        args.use_checkpoint = self.method_config['use_checkpoint']
+        args.amp_opt_level = self.method_config['amp_opt_level']
+        args.tag = self.method_config['tag']
+        args.eval = self.method_config['eval']
+        args.throughput = self.method_config['throughput']
         for key, value in Namespace(config).__dict__.items():
             vars(args)[key] = value
         self.args = args
@@ -59,7 +71,8 @@ class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
         def create_model(ema=False):
         # Network definition
             model = net_factory(net_type=self.backbone, in_chns=1,
-                                class_num=self.num_classes)
+                                class_num=self.num_classes,
+                                device=self.device)
             if ema:
                 for param in model.parameters():
                     param.detach_()
@@ -68,10 +81,10 @@ class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
         self.model = create_model()
         config = get_config(self.args)
         self.model2 = ViT_seg(config, img_size=self.patch_size,
-                        num_classes=self.num_classes).cuda()
+                        num_classes=self.num_classes).to(self.device)
         self.model2.load_from(config)
     
-    def __patients_to_slices(dataset, patiens_num):
+    def __patients_to_slices(self,dataset, patiens_num):
         ref_dict = None
         if "ACDC" in dataset:
             ref_dict = {"3": 68, "7": 136,
@@ -110,6 +123,79 @@ class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
         self.dataloader_val = DataLoader(self.dataset_val, batch_size=1, 
                                          shuffle=False,num_workers=1)
     
+    def _test_single_volume(self, net, image, label, classes, patch_size=[256, 256]):
+        image, label = image.squeeze(0).cpu().detach(
+        ).numpy(), label.squeeze(0).cpu().detach().numpy()
+        prediction = np.zeros_like(label)
+        for ind in range(image.shape[0]):
+            slice = image[ind, :, :]
+            x, y = slice.shape[0], slice.shape[1]
+            slice = zoom(slice, (patch_size[0] / x, patch_size[1] / y), order=0)
+            input = torch.from_numpy(slice).unsqueeze(
+                0).unsqueeze(0).float().to(self.device)
+            net.eval()
+            with torch.no_grad():
+                out = torch.argmax(torch.softmax(
+                    net(input), dim=1), dim=1).squeeze(0)
+                out = out.cpu().detach().numpy()
+                pred = zoom(out, (x / patch_size[0], y / patch_size[1]), order=0)
+                prediction[ind] = pred
+        metric_list = []
+        for i in range(1, classes):
+            metric_list.append(self._calculate_metric(
+                prediction == i, label == i))
+        return metric_list
+    
+    def train(self):
+        if self.method_name=="CTCT":
+            self._train_CTCT()
+    
+    def evaluation(self, model,model_name="model"):
+        metric_list = 0.0
+        for i_batch, sampled_batch in enumerate(self.dataloader_val):
+            volume_batch, label_batch = ( 
+                    sampled_batch['image'], sampled_batch['label']
+                )
+            metric_i = self._test_single_volume(model,volume_batch, 
+                                                label_batch, 
+                                                classes=self.num_classes, 
+                                                patch_size=self.patch_size)
+            metric_list += np.array(metric_i)
+        metric_list = metric_list / len(self.dataset_val)
+        for class_i in range(self.num_classes-1):
+            self.tensorboard_writer.add_scalar(
+                f'info/{model_name}_val_{class_i+1}_dice',
+                metric_list[class_i, 0], self.current_iter
+            )
+            self.tensorboard_writer.add_scalar(
+                f'info/{model_name}_val_{class_i+1}_hd95',
+                metric_list[class_i, 1], self.current_iter
+            )
+        performance = np.mean(metric_list, axis=0)[0]
+        mean_hd95 = np.mean(metric_list,axis=0)[1]
+        self.tensorboard_writer.add_scalar(f'mean/{model_name}_val_mean_dice',
+                                  performance, self.current_iter)
+        self.tensorboard_writer.add_scalar(f'mean/{model_name}_val_mean_hd',
+                                  mean_hd95, self.current_iter)
+        best_performance = self.best_performance
+        if model_name=="model2":
+            best_performance = self.best_performance2
+        if performance > best_performance:
+            if model_name == "model2":
+                self.best_performance2 = performance
+            else:
+                self.best_performance = performance
+            save_mode_path = os.path.join(self.output_folder,
+                                          '{}_iter_{}_dice_{}.pth'.format(
+                                            model_name,
+                                            self.current_iter, 
+                                            round(performance, 4)))
+            save_best = os.path.join(self.output_folder,
+                                     '{}_best_{}.pth'.format(
+                                        self.backbone,model_name))
+            torch.save(model.state_dict(), save_mode_path)
+            torch.save(model.state_dict(), save_best)
+            
         
     def _train_CTCT(self):
         """
@@ -118,169 +204,83 @@ class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
         """
         print("================> Training CTCT<===============")
         iter_num = 0
+        self.get_dataloader()
         max_epoch = self.max_iterations // len(self.dataloader) + 1
-        best_performance1 = 0.0
-        best_performance2 = 0.0
         iterator = tqdm(range(max_epoch), ncols=70)
         for epoch_num in iterator:
             for i_batch, sampled_batch in enumerate(self.dataloader):
-                volume_batch, label_batch = ( sampled_batch['image'], 
-                                              sampled_batch['label'])
-                volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
+                self._adjust_learning_rate()
+                self.model.train()
+                self.model2.train()
+                volume_batch, label_batch = ( 
+                    sampled_batch['image'], sampled_batch['label']
+                )
+                volume_batch, label_batch = (
+                    volume_batch.to(self.device), label_batch.to(self.device)
+                )
 
                 outputs1 = self.model(volume_batch)
                 outputs_soft1 = torch.softmax(outputs1, dim=1)
 
-                outputs2 = model2(volume_batch)
+                outputs2 = self.model2(volume_batch)
                 outputs_soft2 = torch.softmax(outputs2, dim=1)
-                consistency_weight = get_current_consistency_weight(
-                    iter_num // 150)
+                self.consistency_weight = (
+                    self._get_current_consistency_weight(self.current_iter//150)
+                )
 
-                loss1 = 0.5 * (ce_loss(outputs1[:args.labeled_bs], label_batch[:args.labeled_bs].long()) + dice_loss(
-                    outputs_soft1[:args.labeled_bs], label_batch[:args.labeled_bs].unsqueeze(1)))
-                loss2 = 0.5 * (ce_loss(outputs2[:args.labeled_bs], label_batch[:args.labeled_bs].long()) + dice_loss(
-                    outputs_soft2[:args.labeled_bs], label_batch[:args.labeled_bs].unsqueeze(1)))
+                loss1 = 0.5 * (self.ce_loss(
+                                    outputs1[:self.labeled_bs], 
+                                    label_batch[:self.labeled_bs].long()
+                                ) + 
+                               self.dice_loss(
+                                   outputs_soft1[:self.labeled_bs], 
+                                   label_batch[:self.labeled_bs].unsqueeze(1)
+                                ))
+                loss2 = 0.5 * (self.ce_loss(
+                                    outputs2[:self.labeled_bs], 
+                                            label_batch[:self.labeled_bs].long()
+                                ) + self.dice_loss(
+                                     outputs_soft2[:self.labeled_bs], 
+                                     label_batch[:self.labeled_bs].unsqueeze(1))
+                    )
 
                 pseudo_outputs1 = torch.argmax(
-                    outputs_soft1[args.labeled_bs:].detach(), dim=1, keepdim=False)
+                    outputs_soft1[self.labeled_bs:].detach(), dim=1, keepdim=False)
                 pseudo_outputs2 = torch.argmax(
-                    outputs_soft2[args.labeled_bs:].detach(), dim=1, keepdim=False)
+                    outputs_soft2[self.labeled_bs:].detach(), dim=1, keepdim=False)
 
-                pseudo_supervision1 = dice_loss(
-                    outputs_soft1[args.labeled_bs:], pseudo_outputs2.unsqueeze(1))
-                pseudo_supervision2 = dice_loss(
-                    outputs_soft2[args.labeled_bs:], pseudo_outputs1.unsqueeze(1))
+                pseudo_supervision1 = self.dice_loss(
+                    outputs_soft1[self.labeled_bs:], pseudo_outputs2.unsqueeze(1))
+                pseudo_supervision2 = self.dice_loss(
+                    outputs_soft2[self.labeled_bs:], pseudo_outputs1.unsqueeze(1))
 
-                model1_loss = loss1 + consistency_weight * pseudo_supervision1
-                model2_loss = loss2 + consistency_weight * pseudo_supervision2
+                model1_loss = loss1 + self.consistency_weight * pseudo_supervision1
+                model2_loss = loss2 + self.consistency_weight * pseudo_supervision2
 
-                loss = model1_loss + model2_loss
+                self.loss = model1_loss + model2_loss
 
-                optimizer1.zero_grad()
-                optimizer2.zero_grad()
+                self.optimizer.zero_grad()
+                self.optimizer2.zero_grad()
 
-                loss.backward()
+                self.loss.backward()
 
-                optimizer1.step()
-                optimizer2.step()
+                self.optimizer.step()
+                self.optimizer2.step()
 
-                iter_num = iter_num + 1
+                self.current_iter = self.current_iter + 1
 
-                lr_ = base_lr * (1.0 - iter_num / max_iterations) ** 0.9
-                for param_group in optimizer1.param_groups:
-                    param_group['lr'] = lr_
-                for param_group in optimizer2.param_groups:
-                    param_group['lr'] = lr_
-
-                writer.add_scalar('lr', lr_, iter_num)
-                writer.add_scalar(
-                    'consistency_weight/consistency_weight', consistency_weight, iter_num)
-                writer.add_scalar('loss/model1_loss',
-                                model1_loss, iter_num)
-                writer.add_scalar('loss/model2_loss',
-                                model2_loss, iter_num)
-                logging.info('iteration %d : model1 loss : %f model2 loss : %f' % (
-                    iter_num, model1_loss.item(), model2_loss.item()))
-                if iter_num % 50 == 0:
-                    image = volume_batch[1, 0:1, :, :]
-                    writer.add_image('train/Image', image, iter_num)
-                    outputs = torch.argmax(torch.softmax(
-                        outputs1, dim=1), dim=1, keepdim=True)
-                    writer.add_image('train/model1_Prediction',
-                                    outputs[1, ...] * 50, iter_num)
-                    outputs = torch.argmax(torch.softmax(
-                        outputs2, dim=1), dim=1, keepdim=True)
-                    writer.add_image('train/model2_Prediction',
-                                    outputs[1, ...] * 50, iter_num)
-                    labs = label_batch[1, ...].unsqueeze(0) * 50
-                    writer.add_image('train/GroundTruth', labs, iter_num)
-
-                if iter_num > 800 and iter_num % 200 == 0:
-                    model1.eval()
-                    metric_list = 0.0
-                    for i_batch, sampled_batch in enumerate(valloader):
-                        metric_i = test_single_volume(
-                            sampled_batch["image"], sampled_batch["label"], model1, classes=num_classes, patch_size=args.patch_size)
-                        metric_list += np.array(metric_i)
-                    metric_list = metric_list / len(db_val)
-                    for class_i in range(num_classes-1):
-                        writer.add_scalar('info/model1_val_{}_dice'.format(class_i+1),
-                                        metric_list[class_i, 0], iter_num)
-                        writer.add_scalar('info/model1_val_{}_hd95'.format(class_i+1),
-                                        metric_list[class_i, 1], iter_num)
-
-                    performance1 = np.mean(metric_list, axis=0)[0]
-
-                    mean_hd951 = np.mean(metric_list, axis=0)[1]
-                    writer.add_scalar('info/model1_val_mean_dice',
-                                    performance1, iter_num)
-                    writer.add_scalar('info/model1_val_mean_hd95',
-                                    mean_hd951, iter_num)
-
-                    if performance1 > best_performance1:
-                        best_performance1 = performance1
-                        save_mode_path = os.path.join(snapshot_path,
-                                                    'model1_iter_{}_dice_{}.pth'.format(
-                                                        iter_num, round(best_performance1, 4)))
-                        save_best = os.path.join(snapshot_path,
-                                                '{}_best_model1.pth'.format(args.model))
-                        torch.save(model1.state_dict(), save_mode_path)
-                        torch.save(model1.state_dict(), save_best)
-
-                    logging.info(
-                        'iteration %d : model1_mean_dice : %f model1_mean_hd95 : %f' % (iter_num, performance1, mean_hd951))
-                    model1.train()
-
-                    model2.eval()
-                    metric_list = np.zeros((num_classes,2))
-                    # for i_batch, sampled_batch in enumerate(valloader):
-                    #     metric_i = test_single_volume(
-                    #         sampled_batch["image"], sampled_batch["label"], model2, classes=num_classes, patch_size=args.patch_size)
-                    #     metric_list += np.array(metric_i)
-                    metric_list = metric_list / len(db_val)
-                    for class_i in range(num_classes-1):
-                        writer.add_scalar('info/model2_val_{}_dice'.format(class_i+1),
-                                        metric_list[class_i, 0], iter_num)
-                        writer.add_scalar('info/model2_val_{}_hd95'.format(class_i+1),
-                                        metric_list[class_i, 1], iter_num)
-
-                    performance2 = np.mean(metric_list, axis=0)[0]
-
-                    mean_hd952 = np.mean(metric_list, axis=0)[1]
-                    writer.add_scalar('info/model2_val_mean_dice',
-                                    performance2, iter_num)
-                    writer.add_scalar('info/model2_val_mean_hd95',
-                                    mean_hd952, iter_num)
-
-                    if performance2 > best_performance2:
-                        best_performance2 = performance2
-                        save_mode_path = os.path.join(snapshot_path,
-                                                    'model2_iter_{}_dice_{}.pth'.format(
-                                                        iter_num, round(best_performance2, 4)))
-                        save_best = os.path.join(snapshot_path,
-                                                '{}_best_model2.pth'.format(args.model))
-                        torch.save(model2.state_dict(), save_mode_path)
-                        torch.save(model2.state_dict(), save_best)
-
-                    logging.info(
-                        'iteration %d : model2_mean_dice : %f model2_mean_hd95 : %f' % (iter_num, performance2, mean_hd952))
-                    model2.train()
-
-                if iter_num % 3000 == 0:
-                    save_mode_path = os.path.join(
-                        snapshot_path, 'model1_iter_' + str(iter_num) + '.pth')
-                    torch.save(model1.state_dict(), save_mode_path)
-                    logging.info("save model1 to {}".format(save_mode_path))
-
-                    save_mode_path = os.path.join(
-                        snapshot_path, 'model2_iter_' + str(iter_num) + '.pth')
-                    torch.save(model2.state_dict(), save_mode_path)
-                    logging.info("save model2 to {}".format(save_mode_path))
-
-                if iter_num >= max_iterations:
+                self._add_information_to_writer()
+                if (self.current_iter > self.began_eval_iter and
+                    self.current_iter % self.val_freq == 0
+                ) or self.current_iter==20:
+                    self.evaluation(model=self.model)
+                    self.evaluation(model=self.model2, model_name="vit")
+                if self.current_iter % self.save_checkpoint_freq == 0:
+                    self._save_checkpoint()
+                if self.current_iter >= self.max_iterations:
                     break
-                time1 = time.time()
-            if iter_num >= max_iterations:
+            if self.current_iter >= self.max_iterations:
                 iterator.close()
                 break
-        writer.close()
+        self.tensorboard_writer.close()
+        print("*"*10,"training done!","*"*10)

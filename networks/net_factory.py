@@ -72,9 +72,9 @@ args = parser.parse_args()
 config = get_config(args)
 
 
-def net_factory(net_type="unet", in_chns=1, class_num=3):
+def net_factory(net_type="unet", in_chns=1, class_num=3, device=None):
     if net_type == "unet":
-        net = UNet(in_chns=in_chns, class_num=class_num).cuda()
+        net = UNet(in_chns=in_chns, class_num=class_num).to(device)
     elif net_type == "enet":
         net = ENet(in_channels=in_chns, num_classes=class_num).cuda()
     elif net_type == "unet_ds":

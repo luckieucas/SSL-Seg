@@ -20,7 +20,8 @@ from torchvision import transforms
 from torchvision.utils import make_grid
 from tensorboardX import SummaryWriter
 
-from trainer.semi_trainer_3D import SemiSupervisedTrainer
+from trainer.semi_trainer_3D import SemiSupervisedTrainer3D
+from trainer.semi_trainer_2D import SemiSupervisedTrainer2D
 from utils.util import save_config
 
 
@@ -74,8 +75,15 @@ if __name__ == "__main__":
     )
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(config))
-    trainer = SemiSupervisedTrainer(config=config, output_folder=snapshot_path,
-                                    logging=logging)   
+    if config['train_3D']:
+        trainer = SemiSupervisedTrainer3D(config=config, 
+                                          output_folder=snapshot_path,
+                                          logging=logging)
+    else:
+        trainer = SemiSupervisedTrainer2D(config=config, 
+                                          output_folder=snapshot_path,
+                                          logging=logging,
+                                          root_path=config['root_path'])
     trainer.initialize_network()
     trainer.initialize()
     trainer.train()

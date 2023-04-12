@@ -15,6 +15,7 @@ import random
 import wandb
 from tqdm import tqdm
 import numpy as np
+from medpy import metric
 
 from utils import losses,ramps,cac_loss
 from dataset.BCVData import BCVDataset, BCVDatasetCAC,DatasetSR
@@ -109,7 +110,7 @@ class SemiSupervisedTrainerBase:
         self.dice_loss_con = losses.DiceLoss(2)
         self.dice_loss2 = DiceLoss(normalization='softmax')
         self.cvcl_loss = None
-        self.best_performance = 0.0
+        self.best_performance = torch.tensor([0.0])
         self.best_performance2 = 0.0 # for CPS based methods
         self.current_iter = 0
         self.model = None
@@ -130,9 +131,9 @@ class SemiSupervisedTrainerBase:
         # generate by training process
         self.current_lr = self.initial_lr
         self.current2_lr = self.initial2_lr
-        self.loss = None
-        self.loss_ce = None 
-        self.loss_dice = None
+        self.loss = torch.tensor([0.0])
+        self.loss_ce = torch.tensor([0.0]) 
+        self.loss_dice = torch.tensor([0.0])
         self.loss_dice_con = None # for conditional network
         self.consistency_loss = None
         self.consistency_weight = None
@@ -2943,7 +2944,16 @@ class SemiSupervisedTrainerBase:
         P_sharpen = P ** T / (P ** T + (1-P) ** T)
         return P_sharpen
 
-    
+    def _calculate_metric(self, gt, pred, cal_hd95=False):
+        if pred.sum() > 0 and gt.sum() > 0:
+            dice = metric.binary.dc(pred, gt)
+            if cal_hd95:
+                hd95 = metric.binary.hd95(pred, gt)
+            else:
+                hd95 = 0.0
+            return np.array([dice, hd95])
+        else:
+            return np.zeros(2)
 
 if __name__ == "__main__":
     # test semiTrainer

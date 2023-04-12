@@ -27,7 +27,7 @@ from unet3d.losses import DiceLoss #test loss
 
 
 
-class SemiSupervisedTrainer:
+class SemiSupervisedTrainer3D:
     def __init__(self, config, output_folder, logging) -> None:
         self.config = config
         self.device = torch.device(f"cuda:{config['gpu']}")

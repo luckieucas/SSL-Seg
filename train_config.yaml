@@ -1,10 +1,12 @@
-exp: "vnet_cvcl" # threshhold for model1 and model2 are 0.95
-method: CVCL_partial # udse which semi-supervised method [Baseline,MT,EM,C3PS,DAN,CPS,UAMT,ConNet,McNet,CVCL,CSSR]
-backbone: vnet #[unet_3D_old, McNet,unet_3D_cl ]# backbone model
+exp: "iter100000" # threshhold for model1 and model2 are 0.95
+method: CTCT # use which semi-supervised method [Baseline,MT,EM,C3PS,DAN,CPS,UAMT,ConNet,McNet,CVCL,CSSR,CVCL_partial]
+train_3D: False
+backbone: unet #[unet_3D_old, McNet,unet_3D_cl ]# backbone model
 backbone2: unet_3D_sr #unet_3D_condtion_decoder # backbone for second network [unet_3D_condtion_decoder,unet_3D_condtion,Unet3DConditionBottom]
-dataset_name: BCV
-gpu: '0'
+dataset_name: MMWHS
+gpu: '8'
 FP16: False
+root_path: /data/liupeng/semi-supervised_segmentation/dataset/Task012_Heart
 
 # continue training setting
 continue_wandb: False
@@ -24,7 +26,7 @@ began_eval_iter: 100 # 300
 val_freq: 200 #200
 
 # training settings
-max_iterations: 20000
+max_iterations: 100000
 use_CAC: True   # whether use Context-Aware-Consistency
 use_PL: False # whether use partial label
 deterministic: 1
@@ -90,12 +92,23 @@ METHOD:
     iou_bound_low: 0.1
     iou_bound_high: 1.01
     patch_size_large: [128,208,288] #[144, 256, 320]
+  CTCT:
+    cache_mode: part
+    zip: True
+    accumulation_steps:
+    use_checkpoint: False 
+    amp_opt_level: O1
+    tag:
+    eval: False 
+    throughput: False
+
+
 DATASET:
-  labeled_num: 500
+  labeled_num: 2
   labeled_num_pl: 60 # labeled number for partial labeled data
-  labeled_bs: 1
-  batch_size: 2
-  patch_size: [96,160,160] #[96,112,112] # for DAN #[80,112,112] #[96,160,160]
+  labeled_bs: 16 #1
+  batch_size: 32 #2
+  patch_size: [224, 224] #[96,112,112] # for DAN #[80,112,112] #[96,160,160]
   cutout: True # do random cutout
   rotate_trans: True # do random rotate
   scale_trans: True # do random scale
