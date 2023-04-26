@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader as dataloader
 from torch.utils.data.sampler import Sampler
 import itertools
 import numpy as np 
-from glob import glob
+from batchgenerators.augmentations.utils import pad_nd_image
 import SimpleITK as sitk
 try:
     from .data_augmentation import rotation, affine_transformation, random_cutout
@@ -138,6 +138,7 @@ class DatasetSemi(dataset):
         self.normalization = normalization
         self.labeled_num = labeled_num
         self.train_supervised = train_supervised
+        print("Using class DATASETSEMI","*"*10)
         with open(img_list_file, 'r') as f:
             self.img_list = [img.replace("\n","") for img in f.readlines()]
         if self.train_supervised:
@@ -168,37 +169,11 @@ class DatasetSemi(dataset):
             img_array = np.flip(image, axis=axis).copy()
             mask_array = np.flip(label, axis=axis).copy()
         img_shape = img_array.shape
-        if img_shape[0]< self.patch_size[0]:
-            #need to extend data
-            gap = self.patch_size[0]-img_shape[0]
-            img_array_extend = np.zeros((self.patch_size[0], img_shape[1], img_shape[2]))
-            mask_array_extend = np.zeros((self.patch_size[0], img_shape[1], img_shape[2]))
-            img_array_extend[gap//2:gap//2+img_shape[0],:,:] = img_array
-            mask_array_extend[gap//2:gap//2+img_shape[0],:,:] = mask_array
-            img_array = img_array_extend
-            mask_array = mask_array_extend
-        if img_shape[1]< self.patch_size[1]:
-                #need to extend data
-            img_shape = img_array.shape
-            gap = self.patch_size[1]-img_shape[1]
-            img_array_extend = np.zeros(( img_shape[0], self.patch_size[1],img_shape[2]))
-            mask_array_extend = np.zeros(( img_shape[0], self.patch_size[1], img_shape[2]))
-            img_array_extend[:,gap//2:gap//2+img_shape[1],:] = img_array
-            mask_array_extend[:,gap//2:gap//2+img_shape[1],:] = mask_array
-            img_array = img_array_extend
-            mask_array = mask_array_extend
-        if img_shape[2]< self.patch_size[2]:
-                    #need to extend data
-            img_shape = img_array.shape
-            gap = self.patch_size[2]-img_shape[2]
-            img_array_extend = np.zeros(( img_shape[0],img_shape[1], self.patch_size[2]))
-            mask_array_extend = np.zeros(( img_shape[0], img_shape[1], self.patch_size[2]))
-            img_array_extend[:,:,gap//2:gap//2+img_shape[2]] = img_array
-            mask_array_extend[:,:,gap//2:gap//2+img_shape[2]] = mask_array
-            img_array = img_array_extend
-            mask_array = mask_array_extend
-        #print("mask array shape:", mask_array.shape)
-          # do random flip
+        
+        # padding image and mask when image shape is smaller than patch size
+        img_array = pad_nd_image(img_array,self.patch_size)
+        mask_array = pad_nd_image(mask_array,self.patch_size)
+
         # 将灰度值在阈值之外的截断掉
         """Normalize the image"""
         if "heartMR" in img_name or self.normalization=='MinMax':
@@ -237,10 +212,8 @@ class DatasetSemi(dataset):
         gt_onehot = torch.zeros((self.num_class, mask_array.shape[1], mask_array.shape[2],mask_array.shape[3]))
         gt_onehot.scatter_(0, mask_array.long(), 1)
         mask_array = gt_onehot
-        #mask_array = torch.FloatTensor(mask_array).unsqueeze(0)
+       
         # do transformation
-
-        
         if self.rotate_trans or self.scale_trans:
             if self.rotate_trans:
                 angle_x = random.uniform(-0.08,0.08)

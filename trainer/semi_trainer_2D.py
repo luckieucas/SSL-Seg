@@ -42,7 +42,7 @@ class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
         self.dataloader_val = None
         parser = argparse.ArgumentParser()
         args = parser.parse_args()
-        args.cfg = "../code/configs/swin_tiny_patch4_window7_224_lite.yaml"
+        args.cfg = "./configs/swin_tiny_patch4_window7_224_lite.yaml"
         args.opts = None
         args.batch_size = self.batch_size
         args.zip = True

@@ -64,7 +64,7 @@ parser.add_argument('--seed', type=int,  default=1337, help='random seed')
 parser.add_argument('--num_classes', type=int,  default=8,
                     help='output channel of network')
 parser.add_argument(
-    '--cfg', type=str, default="../code/configs/swin_tiny_patch4_window7_224_lite.yaml", help='path to config file', )
+    '--cfg', type=str, default="./configs/swin_tiny_patch4_window7_224_lite.yaml", help='path to config file', )
 parser.add_argument(
     "--opts",
     help="Modify config options by adding 'KEY VALUE' pairs. ",

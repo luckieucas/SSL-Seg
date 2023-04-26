@@ -7,24 +7,12 @@ import time
 import yaml
 import random 
 import numpy as np
-from tqdm import tqdm
-
 import torch
 import torch.backends.cudnn as cudnn
-import torch.nn as nn
-import torch.nn.functional as F 
-import torch.optim as optim
-from torch.nn.modules.loss import CrossEntropyLoss
-from torch.utils.data import DataLoader
-from torchvision import transforms
-from torchvision.utils import make_grid
-from tensorboardX import SummaryWriter
 
 from trainer.semi_trainer_3D import SemiSupervisedTrainer3D
 from trainer.semi_trainer_2D import SemiSupervisedTrainer2D
 from utils.util import save_config
-
-
 
 
 
