@@ -17,7 +17,7 @@ from tqdm import tqdm
 import numpy as np
 from medpy import metric
 
-from utils import losses,ramps,cac_loss
+from utils import losses,ramps,cac_loss,metrics
 from dataset.BCVData import BCVDataset, BCVDatasetCAC,DatasetSR
 from dataset.dataset import DatasetSemi
 from dataset.sampler import BatchSampler, ClassRandomSampler
@@ -2946,7 +2946,7 @@ class SemiSupervisedTrainerBase:
 
     def _calculate_metric(self, gt, pred, cal_hd95=False):
         if pred.sum() > 0 and gt.sum() > 0:
-            dice = metric.binary.dc(pred, gt)
+            dice = metrics.dc(pred, gt)
             if cal_hd95:
                 hd95 = metric.binary.hd95(pred, gt)
             else:

@@ -105,6 +105,14 @@ def random_rot_flip(image, label):
     label = np.flip(label, axis=axis).copy()
     return image, label
 
+def random_crop(image, label, crop_size):
+    x_offset = np.random.randint(image.shape[0] - crop_size[0] + 1)
+    y_offset = np.random.randint(image.shape[1] - crop_size[1] + 1)
+    cropped_img = image[x_offset:x_offset+crop_size[0],
+                        y_offset:y_offset+crop_size[1]]
+    cropped_label = label[x_offset:x_offset+crop_size[0],
+                          y_offset:y_offset+crop_size[1]]
+    return cropped_img, cropped_label
 
 def random_rotate(image, label):
     angle = np.random.randint(-20, 20)
@@ -127,10 +135,11 @@ class RandomGenerator(object):
         elif random.random() > 0.5:
             image, label = random_rotate(image, label)
         x, y = image.shape
-        image = zoom(
-            image, (self.output_size[0] / x, self.output_size[1] / y), order=0)
-        label = zoom(
-            label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
+        # image = zoom(
+        #     image, (self.output_size[0] / x, self.output_size[1] / y), order=0)
+        # label = zoom(
+        #     label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
+        image, label = random_crop(image,label,self.output_size)
         image = torch.from_numpy(
             image.astype(np.float32)).unsqueeze(0)
         label = torch.from_numpy(label.astype(np.uint8))

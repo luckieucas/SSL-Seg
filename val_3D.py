@@ -11,6 +11,7 @@ from medpy import metric
 from tqdm import tqdm
 from random import shuffle
 import random
+from monai.metrics import DiceMetric
 
 
 def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1, 
@@ -158,6 +159,7 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
     else:
         condition_list = [i for i in range(1,num_classes)]
     #shuffle(condition_list)
+    dice_metric = DiceMetric(include_background=False)
     shuffle(image_list)
     if not do_condition:
         test_num = len(image_list)
@@ -207,7 +209,11 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
                 method=method)
             if cal_metric:
                 for i in range(1, num_classes):
-                    total_metric[i-1, :] += calculate_metric(label == i, prediction == i)
+                    dice = dice_metric(torch.from_numpy(prediction==i),
+                                   torch.from_numpy(label==i))
+                    print(dice)
+                    total_metric[i-1, :] += calculate_metric((label == i).astype(np.int32),
+                                                             (prediction == i).astype(np.int32))
         
         # save prediction
         if save_prediction: 

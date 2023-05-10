@@ -80,7 +80,9 @@ tensorboard==2.12.2
 threadpoolctl==3.1.0
 tifffile==2023.4.12
 timm==0.6.13
+torch==2.0.0
 torchsummary==1.5.1
+torchvision==0.15.1
 tqdm==4.65.0
 traceback2==1.4.0
 triton==2.0.0

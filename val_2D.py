@@ -2,14 +2,15 @@ import numpy as np
 import torch
 from medpy import metric
 from scipy.ndimage import zoom
+from utils import binary
 
 
 def calculate_metric_percase(pred, gt):
     pred[pred > 0] = 1
     gt[gt > 0] = 1
     if pred.sum() > 0:
-        dice = metric.binary.dc(pred, gt)
-        hd95 = metric.binary.hd95(pred, gt)
+        dice = binary.dc(pred, gt)
+        hd95 = binary.hd95(pred, gt)
         return dice, hd95
     else:
         return 0, 0

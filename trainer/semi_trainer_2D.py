@@ -80,7 +80,7 @@ class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
 
         self.model = create_model()
         config = get_config(self.args)
-        self.model2 = ViT_seg(config, img_size=self.patch_size,
+        self.model2 = ViT_seg(confdig, img_size=self.patch_size,
                         num_classes=self.num_classes).to(self.device)
         self.model2.load_from(config)
     

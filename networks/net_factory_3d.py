@@ -21,6 +21,7 @@ from networks.unet_3D_sr import unet_3D_sr
 from networks.resnet3D import generate_resnet3d
 from networks.DenseNet3D import SinglePathDenseNet
 from networks.DenseVox3D import DenseVoxelNet
+from monai.networks.nets import UNet
 
 def net_factory_3d(net_type="unet_3D", in_chns=1, class_num=2, 
                    model_config=None, device=None, condition_noise=False):
@@ -28,7 +29,17 @@ def net_factory_3d(net_type="unet_3D", in_chns=1, class_num=2,
         model_config['out_channels'] = class_num
         net = get_model(model_config).to(device)
     elif net_type == 'unet_3D_old':
-        net = unet_3D(n_classes=class_num, in_channels=in_chns).to(device)
+        #net = unet_3D(n_classes=class_num, in_channels=in_chns).to(device)
+        net = UNet(
+            spatial_dims=3,
+            in_channels=in_chns,
+            out_channels=class_num,
+            channels=(16, 32, 64, 128, 256),
+            strides=(2, 2, 2, 2),
+            num_res_units=2,
+            kernel_size=(3,3,3)
+        ).to(device)
+        print(f"net:{net}")
     elif net_type == "unet_3D_condition":
         net = unet_3D_Condition(
             n_classes=class_num, in_channels=in_chns

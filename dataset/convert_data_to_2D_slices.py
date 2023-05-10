@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--img_list",type=str,
-                    default='/data/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/MMWHS/MMWHS_test.txt', 
+                    default='/data1/liupeng/semi-supervised_segmentation/SSL4MIS-master/data/MMWHS/MMWHS_test.txt', 
                     help='image file list txt file')
 
 def convert_h5_file(args,cut_lower=None,cut_upper=None):
@@ -26,21 +26,38 @@ def convert_h5_file(args,cut_lower=None,cut_upper=None):
         else:
             image_path = case 
             mask_path = case.replace("img","label")
+        image_path = image_path.replace("_crop","")
+        mask_path = mask_path.replace("_crop","")
         root_path,_ = os.path.split(image_path)
         img_itk = sitk.ReadImage(image_path)
-        origin = img_itk.GetOrigin()
-        spacing = img_itk.GetSpacing()
-        direction = img_itk.GetDirection()
         image = sitk.GetArrayFromImage(img_itk)
         if os.path.exists(mask_path):
             msk_itk = sitk.ReadImage(mask_path)
             mask = sitk.GetArrayFromImage(msk_itk)
+            h,w,d = mask.shape
+            boud_h, boud_w, boud_d = np.where(mask >= 1)
+            bbx_h_min = boud_h.min()
+            bbx_h_max = boud_h.max()
+            bbx_w_min = boud_w.min()
+            bbx_w_max = boud_w.max()
+            bbx_d_min = boud_d.min()
+            bbx_d_max = boud_d.max()
+            mask = mask[
+                max(bbx_h_min,0):min(bbx_h_max,h),
+                16:464,#max(bbx_w_min-60,0):min(bbx_w_max+60,w),
+                5:465 #max(bbx_d_min-50,0):min(bbx_d_max+50,d)
+            ]
+            image = image[
+                max(bbx_h_min,0):min(bbx_h_max,h),
+                16:464,#max(bbx_w_min-60,0):min(bbx_w_max+60,w),
+                5:465 #max(bbx_d_min-50,0):min(bbx_d_max+50,d)
+            ]
             if cut_lower:
                 np.clip(image,cut_lower,cut_upper,out=image)
             image = (image - image.mean()) / image.std()
-            print(image.shape)
+            print(f"image shape:{image.shape}")
             image = image.astype(np.float32)
-            mask = mask.astype(np.int)
+            mask = mask.astype(np.int32)
             item = case.split("/")[-1].split(".")[0].split("_crop")[0]
             print("item:",item)
             if image.shape != mask.shape:
@@ -66,24 +83,40 @@ def convert_2d_slices(args,cut_lower=None,cut_upper=None):
         else:
             image_path = case 
             mask_path = case.replace("img","label")
+        image_path = image_path.replace("_crop","")
+        mask_path = mask_path.replace("_crop","")
         root_path,_ = os.path.split(image_path)
         img_itk = sitk.ReadImage(image_path)
-        origin = img_itk.GetOrigin()
-        spacing = img_itk.GetSpacing()
-        direction = img_itk.GetDirection()
         image = sitk.GetArrayFromImage(img_itk)
         if os.path.exists(mask_path):
             msk_itk = sitk.ReadImage(mask_path)
             mask = sitk.GetArrayFromImage(msk_itk)
+            h,w,d = mask.shape
+            boud_h, boud_w, boud_d = np.where(mask >= 1)
+            bbx_h_min = boud_h.min()
+            bbx_h_max = boud_h.max()
+            bbx_w_min = boud_w.min()
+            bbx_w_max = boud_w.max()
+            bbx_d_min = boud_d.min()
+            bbx_d_max = boud_d.max()
+            mask = mask[
+                max(bbx_h_min,0):min(bbx_h_max,h),
+                16:464,#max(bbx_w_min-60,0):min(bbx_w_max+60,w),
+                5:465 #max(bbx_d_min-50,0):min(bbx_d_max+50,d)
+            ]
+            image = image[
+                max(bbx_h_min,0):min(bbx_h_max,h),
+                16:464,#max(bbx_w_min-60,0):min(bbx_w_max+60,w),
+                5:465 #max(bbx_d_min-50,0):min(bbx_d_max+50,d)
+            ]
+            print(f"image shape:{image.shape}")
             if cut_lower:
                 np.clip(image,cut_lower,cut_upper,out=image)
             image = (image - image.mean()) / image.std()
-            print(image.shape)
             image = image.astype(np.float32)
             item = case.split("/")[-1].split(".")[0].split("_crop")[0]
             print(item)
-            if image.shape != mask.shape:
-                print("Error")
+            assert image.shape == mask.shape, "Image and mask shape mismatch"
             for slice_ind in range(image.shape[0]):
                 f = h5py.File(
                     '{}/{}_slice_{}.h5'.format(args.save_path, item, slice_ind), 'w')
@@ -120,7 +153,7 @@ def generate_train_test_list_file(args,is_train=True):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    args.save_path = "/data/liupeng/semi-supervised_segmentation/dataset/Task012_Heart/data/"
+    args.save_path = "/data1/liupeng/semi-supervised_segmentation/dataset/Task012_Heart/data/"
     cut_lower = -200
     cut_upper = 300
     #main(args)
