@@ -15,10 +15,9 @@ from trainer.semi_trainer_2D import SemiSupervisedTrainer2D
 from utils.util import save_config
 
 
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str,
-                    default='train_config_2d.yaml', help='training configuration')
+                    default='train_config_3d.yaml', help='training configuration')
 
 
 if __name__ == "__main__":

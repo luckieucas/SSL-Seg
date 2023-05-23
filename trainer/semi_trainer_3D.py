@@ -9,7 +9,8 @@ import torch.nn as nn
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
-import torch.cuda.amp as amp
+from torch import autocast
+from torch.cuda.amp import GradScaler
 from tensorboardX import SummaryWriter
 import random
 import wandb
@@ -136,6 +137,8 @@ class SemiSupervisedTrainer3D:
         self.loss_dice_con = None # for conditional network
         self.consistency_loss = None
         self.consistency_weight = None
+        self.grad_scaler1 = GradScaler()
+        self.grad_scaler2 = GradScaler()
 
     
     def initialize(self):
@@ -304,7 +307,7 @@ class SemiSupervisedTrainer3D:
 
     def initialize_optimizer_and_scheduler(self):
         assert self.model is not None, "self.initialize_network must be called first"
-        self.scaler = amp.GradScaler()
+        self.scaler = GradScaler()
         if self.optimizer_type == "Adam":
             self.optimizer = torch.optim.Adam(self.model.parameters(), 
                                           self.initial_lr, 
@@ -325,7 +328,7 @@ class SemiSupervisedTrainer3D:
                                           amsgrad=True)
         
         if self.method_name in ['CPS', 'C3PS', 'ConNet', 'CSSR']:
-            self.scaler2 = amp.GradScaler()
+            self.scaler2 = GradScaler()
             if self.optimizer2_type == 'Adam':
                 self.optimizer2 = torch.optim.Adam(
                     self.model2.parameters(), 
@@ -2433,83 +2436,94 @@ class SemiSupervisedTrainer3D:
                     -0.2, 
                     0.2
                 )
-                outputs1 = self.model(volume_small+ noise1)
-                outputs_soft1 = torch.softmax(outputs1, dim=1)
-                noise2 = torch.clamp(
-                    torch.randn_like(volume_large) * 0.1, 
-                    -0.2, 
-                    0.2
-                )
-                outputs2 = self.model2(volume_large + noise2)
-                outputs_soft2 = torch.softmax(outputs2, dim=1)
-
-                self.consistency_weight = self._get_current_consistency_weight(
-                    self.current_iter//150
-                )
-                loss1 = 0.5 * (self.ce_loss(outputs1[:self.labeled_bs],
-                                   label_small[:self.labeled_bs].long()) + 
-                               self.dice_loss(outputs_soft1[:self.labeled_bs], 
-                                             label_small[:self.labeled_bs].\
-                                                unsqueeze(1)))
-                loss2 = 0.5 * (self.ce_loss(outputs2[:self.labeled_bs],
-                                   label_large[:self.labeled_bs].long()) + 
-                               self.dice_loss(outputs_soft2[:self.labeled_bs], 
-                                             label_large[:self.labeled_bs].\
-                                                unsqueeze(1)))
-                max_prob1,pseudo_outputs1 = torch.max(
-                    outputs_soft1[self.labeled_bs:].detach(), dim=1
-                )
-                #assert (pseudo_outputs1_old!=pseudo_outputs1).sum()==0,'error of pseudo mask1'
-                # filter the pseudo mask by max prob
-                filter1 = (
-                    ((max_prob1>0.99)&(pseudo_outputs1==0))|
-                    ((max_prob1>0.9)&(pseudo_outputs1!=0))
-                )
-                
-
-                max_prob2,pseudo_outputs2 = torch.max(
-                    outputs_soft2[self.labeled_bs:].detach(), dim=1
-                )
-                #assert (pseudo_outputs2_old!=pseudo_outputs2).sum()==0,'error of pseudo mask2'
-                # filter the pseudo mask by max prob
-                filter2 = (
-                    ((max_prob2>0.99)&(pseudo_outputs2==0))|
-                    ((max_prob2>0.9)&(pseudo_outputs2!=0))
-                )
-                
-                if self.current_iter < self.began_semi_iter:
-                    pseudo_supervision1 = torch.FloatTensor([0]).to(self.device)
-                    pseudo_supervision2 = torch.FloatTensor([0]).to(self.device)
-                else:
-                    pseudo_outputs2[filter2==0] = 255
-                    pseudo_supervision1 = self.ce_loss(
-                        outputs1[self.labeled_bs:,:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]],
-                        pseudo_outputs2[:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]]
-                    ) 
-                    # + self.dice_loss(
-                    #     outputs1[self.labeled_bs:,:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]],
-                    #     pseudo_outputs2[:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]].unsqueeze(1)
-                    # )
-                    pseudo_outputs1[filter1==0] = 255
-                    pseudo_supervision2 = self.ce_loss(
-                        outputs2[self.labeled_bs:,:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]],
-                        pseudo_outputs1[:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]]
-                    ) 
-                    # + self.dice_loss(
-                    #     outputs2[self.labeled_bs:,:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]],
-                    #     pseudo_outputs1[:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]].unsqueeze(1)
-                    # )
-                model1_loss = loss1 + self.consistency_weight *  \
-                                      pseudo_supervision1
-                model2_loss = loss2 + self.consistency_weight * \
-                                      pseudo_supervision2
-                loss = model1_loss + model2_loss 
                 self.optimizer.zero_grad()
                 self.optimizer2.zero_grad()
+                with autocast(self.device.type, enabled=True):
+                    outputs1 = self.model(volume_small+ noise1)
+                    outputs_soft1 = torch.softmax(outputs1, dim=1)
+                    noise2 = torch.clamp(
+                        torch.randn_like(volume_large) * 0.1, 
+                        -0.2, 
+                        0.2
+                    )
+                    outputs2 = self.model2(volume_large + noise2)
+                    outputs_soft2 = torch.softmax(outputs2, dim=1)
 
-                loss.backward()
-                self.optimizer.step()
-                self.optimizer2.step()
+                    self.consistency_weight = self._get_current_consistency_weight(
+                        self.current_iter//150
+                    )
+                    loss1 = 0.5 * (self.ce_loss(outputs1[:self.labeled_bs],
+                                    label_small[:self.labeled_bs].long()) + 
+                                self.dice_loss(outputs_soft1[:self.labeled_bs], 
+                                                label_small[:self.labeled_bs].\
+                                                    unsqueeze(1)))
+                    loss2 = 0.5 * (self.ce_loss(outputs2[:self.labeled_bs],
+                                    label_large[:self.labeled_bs].long()) + 
+                                self.dice_loss(outputs_soft2[:self.labeled_bs], 
+                                                label_large[:self.labeled_bs].\
+                                                    unsqueeze(1)))
+                    max_prob1,pseudo_outputs1 = torch.max(
+                        outputs_soft1[self.labeled_bs:].detach(), dim=1
+                    )
+                    #assert (pseudo_outputs1_old!=pseudo_outputs1).sum()==0,'error of pseudo mask1'
+                    # filter the pseudo mask by max prob
+                    filter1 = (
+                        ((max_prob1>0.99)&(pseudo_outputs1==0))|
+                        ((max_prob1>0.9)&(pseudo_outputs1!=0))
+                    )
+                    
+
+                    max_prob2,pseudo_outputs2 = torch.max(
+                        outputs_soft2[self.labeled_bs:].detach(), dim=1
+                    )
+                    #assert (pseudo_outputs2_old!=pseudo_outputs2).sum()==0,'error of pseudo mask2'
+                    # filter the pseudo mask by max prob
+                    filter2 = (
+                        ((max_prob2>0.99)&(pseudo_outputs2==0))|
+                        ((max_prob2>0.9)&(pseudo_outputs2!=0))
+                    )
+                    
+                    if self.current_iter < self.began_semi_iter:
+                        pseudo_supervision1 = torch.FloatTensor([0]).to(self.device)
+                        pseudo_supervision2 = torch.FloatTensor([0]).to(self.device)
+                    else:
+                        pseudo_outputs2[filter2==0] = 255
+                        pseudo_supervision1 = self.ce_loss(
+                            outputs1[self.labeled_bs:,:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]],
+                            pseudo_outputs2[:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]]
+                        ) 
+                        # + self.dice_loss(
+                        #     outputs1[self.labeled_bs:,:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]],
+                        #     pseudo_outputs2[:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]].unsqueeze(1)
+                        # )
+                        pseudo_outputs1[filter1==0] = 255
+                        pseudo_supervision2 = self.ce_loss(
+                            outputs2[self.labeled_bs:,:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]],
+                            pseudo_outputs1[:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]]
+                        ) 
+                        # + self.dice_loss(
+                        #     outputs2[self.labeled_bs:,:,ul_large_u[0]:br_large_u[0],ul_large_u[1]:br_large_u[1],ul_large_u[2]:br_large_u[2]],
+                        #     pseudo_outputs1[:,ul_small_u[0]:br_small_u[0],ul_small_u[1]:br_small_u[1],ul_small_u[2]:br_small_u[2]].unsqueeze(1)
+                        # )
+                    model1_loss = loss1 + self.consistency_weight *  \
+                                        pseudo_supervision1
+                    model2_loss = loss2 + self.consistency_weight * \
+                                        pseudo_supervision2
+                    loss = model1_loss + model2_loss 
+
+                self.grad_scaler1.scale(model1_loss).backward()
+                self.grad_scaler1.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 12)
+                self.grad_scaler1.step(self.optimizer)
+                self.grad_scaler1.update()
+                self.grad_scaler2.scale(model2_loss).backward()
+                self.grad_scaler2.unscale_(self.optimizer2)
+                torch.nn.utils.clip_grad_norm_(self.model2.parameters(), 12)
+                self.grad_scaler2.step(self.optimizer2)
+                self.grad_scaler2.update()
+                #loss.backward()
+                # self.optimizer.step()
+                # self.optimizer2.step()
                 
                 self._adjust_learning_rate()
                 self.current_iter += 1
