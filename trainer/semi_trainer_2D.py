@@ -18,11 +18,9 @@ import numpy as np
 import argparse
 from scipy.ndimage import zoom
 
-from utils import losses,ramps,cac_loss
 from dataset.BCVData import BCVDataset, BCVDatasetCAC,DatasetSR
 from dataset.dataset import DatasetSemi
 from dataset.sampler import BatchSampler, ClassRandomSampler
-from networks.net_factory_3d import net_factory_3d
 from dataset.dataset import TwoStreamBatchSampler
 from dataset.dataset_old import (BaseDataSets, RandomGenerator,
                                  TwoStreamBatchSampler)
@@ -35,7 +33,7 @@ from arguments import Namespace
 
 
 class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
-    def __init__(self, config, output_folder, logging, root_path) -> None:
+    def __init__(self, config, output_folder=None, logging=None, root_path=None) -> None:
         SemiSupervisedTrainerBase.__init__(self, config, output_folder, logging)
         self.root_path = root_path
         self.dataset_val = None
@@ -59,6 +57,12 @@ class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
         self.args = args
     
     
+    def load_checkpoint(self, fname, train=True):
+        checkpoint = torch.load(fname)
+        self.model.load_state_dict(checkpoint)
+        self.model.to(self.device)
+        
+    
     def load_dataset(self):
         self.dataset = BaseDataSets(base_dir=self.root_path, 
                             split="train", num=None, 
@@ -80,7 +84,7 @@ class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
 
         self.model = create_model()
         config = get_config(self.args)
-        self.model2 = ViT_seg(confdig, img_size=self.patch_size,
+        self.model2 = ViT_seg(config, img_size=self.patch_size,
                         num_classes=self.num_classes).to(self.device)
         self.model2.load_from(config)
     
@@ -143,7 +147,7 @@ class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
         metric_list = []
         for i in range(1, classes):
             metric_list.append(self._calculate_metric(
-                prediction == i, label == i))
+                prediction == i, label == i, cal_asd=True))
         return metric_list
     
     def train(self):
@@ -204,7 +208,6 @@ class SemiSupervisedTrainer2D(SemiSupervisedTrainerBase):
         """
         print("================> Training CTCT<===============")
         iter_num = 0
-        self.get_dataloader()
         max_epoch = self.max_iterations // len(self.dataloader) + 1
         iterator = tqdm(range(max_epoch), ncols=70)
         for epoch_num in iterator:

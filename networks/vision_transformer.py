@@ -57,15 +57,17 @@ class SwinUnet(nn.Module):
             print("pretrained_path:{}".format(pretrained_path))
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             pretrained_dict = torch.load(pretrained_path, map_location=device)
+            print(f"prediction dict:{pretrained_dict.keys()}")
             if "model"  not in pretrained_dict:
                 print("---start load pretrained modle by splitting---")
-                pretrained_dict = {k[17:]:v for k,v in pretrained_dict.items()}
-                for k in list(pretrained_dict.keys()):
-                    if "output" in k:
-                        print("delete key:{}".format(k))
-                        del pretrained_dict[k]
+                pretrained_dict = {k[10:]:v for k,v in pretrained_dict.items()}
+                # for k in list(pretrained_dict.keys()):
+                #     print("key: ",k)
+                #     if "output" in k:
+                #         print("delete key:{}".format(k))
+                #         del pretrained_dict[k]
                 msg = self.swin_unet.load_state_dict(pretrained_dict,strict=False)
-                # print(msg)
+                print(msg)
                 return
             pretrained_dict = pretrained_dict['model']
             print("---start load pretrained modle of swin encoder---")
@@ -84,7 +86,7 @@ class SwinUnet(nn.Module):
                         del full_dict[k]
 
             msg = self.swin_unet.load_state_dict(full_dict, strict=False)
-            # print(msg)
+            print(msg)
         else:
             print("none pretrain")
  

@@ -2,7 +2,7 @@ MODEL:
   TYPE: swin
   NAME: swin_tiny_patch4_window7_224
   DROP_PATH_RATE: 0.2
-  PRETRAIN_CKPT: 
+  PRETRAIN_CKPT:  #/data1/liupeng/semi-supervised_segmentation/SSL4MIS-master/model/MMWHS_2_CTCT_img_size448_SGD_SGD/unet/vit_iter_45400_dice_0.6786.pth
   SWIN:
     FINAL_UPSAMPLE: "expand_first"
     EMBED_DIM: 96

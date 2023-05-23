@@ -159,6 +159,7 @@ class SemiSupervisedTrainerBase:
         wandb.tensorboard.patch(root_logdir=self.output_folder + '/log')
         self.tensorboard_writer = SummaryWriter(self.output_folder + '/log')
         self.load_dataset()
+        self.get_dataloader()
         self.initialize_optimizer_and_scheduler()
     
     def initialize_network(self):
@@ -2944,16 +2945,16 @@ class SemiSupervisedTrainerBase:
         P_sharpen = P ** T / (P ** T + (1-P) ** T)
         return P_sharpen
 
-    def _calculate_metric(self, gt, pred, cal_hd95=False):
+    def _calculate_metric(self, pred, gt, cal_asd=False):
         if pred.sum() > 0 and gt.sum() > 0:
             dice = metrics.dc(pred, gt)
-            if cal_hd95:
-                hd95 = metric.binary.hd95(pred, gt)
+            if cal_asd:
+                asd = metric.binary.asd(pred, gt)
             else:
-                hd95 = 0.0
-            return np.array([dice, hd95])
+                asd = 0.0
+            return np.array([dice, asd])
         else:
-            return np.zeros(2)
+            return np.arrray([0,150])
 
 if __name__ == "__main__":
     # test semiTrainer
