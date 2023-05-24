@@ -9,7 +9,7 @@ import torch.nn as nn
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
-from torch import autocast
+from torch.cuda.amp import autocast
 from torch.cuda.amp import GradScaler
 from tensorboardX import SummaryWriter
 import random
@@ -2413,18 +2413,21 @@ class SemiSupervisedTrainer3D:
         print("================> Training CSSR<===============")
         iterator = tqdm(range(self.max_epoch), ncols=70)
         iter_each_epoch = len(self.dataloader)
+        self.model = self.model.float().to(self.device)
+        self.model2 = self.model2.float().to(self.device)
         for epoch_num in iterator:
             for i_batch, sampled_batch in enumerate(self.dataloader):
                 self.model.train()
                 self.model2.train()
                 volume_large, label_large = (
-                    sampled_batch['image_large'].to(self.device),
-                    sampled_batch['label_large'].to(self.device)
+                    sampled_batch['image_large'].float().to(self.device),
+                    sampled_batch['label_large'].float().to(self.device)
                 )
                 volume_small, label_small = (
-                    sampled_batch['image_small'].to(self.device),
-                    sampled_batch['label_small'].to(self.device)
+                    sampled_batch['image_small'].float().to(self.device),
+                    sampled_batch['label_small'].float().to(self.device)
                 )
+
                 ul_large,br_large = sampled_batch['ul1'],sampled_batch['br1']
                 ul_small,br_small = sampled_batch['ul2'],sampled_batch['br2']
                 ul_large_u = [x[self.labeled_bs:] for x in ul_large ]
@@ -2435,17 +2438,17 @@ class SemiSupervisedTrainer3D:
                     torch.randn_like(volume_small) * 0.1, 
                     -0.2, 
                     0.2
-                )
-                self.optimizer.zero_grad()
-                self.optimizer2.zero_grad()
-                with autocast(self.device.type, enabled=True):
-                    outputs1 = self.model(volume_small+ noise1)
-                    outputs_soft1 = torch.softmax(outputs1, dim=1)
-                    noise2 = torch.clamp(
-                        torch.randn_like(volume_large) * 0.1, 
+                ).to(self.device)
+                noise2 = torch.clamp(
+                    torch.randn_like(volume_large) * 0.1, 
                         -0.2, 
                         0.2
-                    )
+                    ).to(self.device)
+                self.optimizer.zero_grad()
+                self.optimizer2.zero_grad()
+                with autocast():
+                    outputs1 = self.model(volume_small+noise1)
+                    outputs_soft1 = torch.softmax(outputs1, dim=1)
                     outputs2 = self.model2(volume_large + noise2)
                     outputs_soft2 = torch.softmax(outputs2, dim=1)
 
