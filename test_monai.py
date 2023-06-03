@@ -45,7 +45,8 @@ parser.add_argument(
 class_id_name_dict = {
     'MMWHS':['MYO', 'LA', 'LV', 'RA', 'AA', 'PA', 'RV'],
     'BCV':['Spleen', 'Right Kidney', 'Left Kidney','Liver','Pancreas'],
-    'LA':['LA']
+    'LA':['LA'],
+    'FLARE':['Liver','Kidney','Spleen','Pancreas']
 }
 
 def cal_metric(gt, pred, num_classes, total_metric, res_metric, img_num, 

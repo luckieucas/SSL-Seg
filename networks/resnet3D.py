@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from networks.DenseNet3D import BaseModel
 from torchsummary import summary
-torch.backends.cudnn.enabled = False
 
 """
 Original paper here: https://arxiv.org/abs/1904.00625

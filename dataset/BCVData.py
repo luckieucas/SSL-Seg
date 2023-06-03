@@ -208,18 +208,22 @@ class BCVDatasetCAC(dataset):
         """get task name"""
         _,img_name = os.path.split(img_path)
         task_name = "full"
-        if len(img_name.split("_")) >1:
-            task_name = img_name.split("_")[0]
         task_id = task_name_id_dict[task_name]
         
         """read image and mask"""
-        image = sitk.ReadImage(img_path)
-        img_array = sitk.GetArrayFromImage(image)
-        if index < self.labeled_num: 
-            mask = sitk.ReadImage(mask_path)
-            mask_array = sitk.GetArrayFromImage(mask)
+        if ".npy" in img_path:
+            img_array = np.load(img_path).squeeze()
+            if index < self.labeled_num:
+                mask_array = np.load(mask_path).squeeze()
+                mask_array[mask_array<0] = 0
+            else:
+                mask_array = np.zeros_like(img_array)           
         else:
-            mask_array = np.zeros_like(img_array)
+            img_array = sitk.GetArrayFromImage(sitk.ReadImage(img_path))
+            if index < self.labeled_num: 
+                mask_array = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
+            else:
+                mask_array = np.zeros_like(img_array)
         mask_array = mask_array.astype(np.uint8)
         
         """ do random rotate and flip"""
@@ -227,39 +231,13 @@ class BCVDatasetCAC(dataset):
             img_array, mask_array = random_rotate_flip(img_array, mask_array)
             
         """ padding image """
-        img_shape = img_array.shape
-        if img_shape[0]< self.patch_size[0]:
-            #need to extend data
-            gap = self.patch_size[0]-img_shape[0]
-            img_array_extend = np.zeros((self.patch_size[0], img_shape[1], img_shape[2]))
-            mask_array_extend = np.zeros((self.patch_size[0], img_shape[1], img_shape[2]))
-            img_array_extend[gap//2:gap//2+img_shape[0],:,:] = img_array
-            mask_array_extend[gap//2:gap//2+img_shape[0],:,:] = mask_array
-            img_array = img_array_extend
-            mask_array = mask_array_extend
-        
-        if img_shape[1]< self.patch_size[1]:
-                #need to extend data
-            gap = self.patch_size[1]-img_shape[1]
-            img_array_extend = np.zeros(( img_shape[0], self.patch_size[1],img_shape[2]))
-            mask_array_extend = np.zeros(( img_shape[0], self.patch_size[1], img_shape[2]))
-            img_array_extend[:,gap//2:gap//2+img_shape[1],:] = img_array
-            mask_array_extend[:,gap//2:gap//2+img_shape[1],:] = mask_array
-            img_array = img_array_extend
-            mask_array = mask_array_extend
-        if img_shape[2]< self.patch_size[2]:
-                    #need to extend data
-            gap = self.patch_size[2]-img_shape[2]
-            img_array_extend = np.zeros(( img_shape[0],img_shape[1], self.patch_size[2]))
-            mask_array_extend = np.zeros(( img_shape[0], img_shape[1], self.patch_size[2]))
-            img_array_extend[:,:,gap//2:gap//2+img_shape[2]] = img_array
-            mask_array_extend[:,:,gap//2:gap//2+img_shape[2]] = mask_array
-            img_array = img_array_extend
-            mask_array = mask_array_extend
+        img_array = pad_nd_image(img_array,self.patch_size)
+        mask_array = pad_nd_image(mask_array,self.patch_size)
         # 将灰度值在阈值之外的截断掉
-        np.clip(img_array, self.lower, self.upper, out=img_array)
-        """Normalize the image"""
-        img_array = (img_array - img_array.mean())/img_array.std()
+        if ".npy" not in img_name:
+            np.clip(img_array, self.lower, self.upper, out=img_array)
+            """Normalize the image"""
+            img_array = (img_array - img_array.mean())/img_array.std()
         shape = img_array.shape
         
         
@@ -534,11 +512,16 @@ class DatasetSR(dataset):
         """get task name"""
         _,img_name = os.path.split(img_path)
         """read image and mask"""
-        image = sitk.ReadImage(img_path)
-        img_array = sitk.GetArrayFromImage(image)
+        if ".npy" in img_path:
+            img_array = np.load(img_path).squeeze()
+        else:
+            img_array = sitk.GetArrayFromImage(sitk.ReadImage(img_path))
         if index < self.labeled_num: 
-            mask = sitk.ReadImage(mask_path)
-            mask_array = sitk.GetArrayFromImage(mask)
+            if ".npy" in mask_path:
+                mask_array = np.load(mask_path).squeeze()
+                mask_array[mask_array<0] = 0
+            else:
+                mask_array = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
         else:
             mask_array = np.zeros_like(img_array)
         mask_array = mask_array.astype(np.uint8)
@@ -548,13 +531,13 @@ class DatasetSR(dataset):
             img_array, mask_array = random_rotate_flip(img_array, mask_array)
             
         """ padding image """
-        img_shape = img_array.shape
         img_array = pad_nd_image(img_array,self.patch_size_large)
         mask_array = pad_nd_image(mask_array,self.patch_size_large)
         # 将灰度值在阈值之外的截断掉
-        np.clip(img_array, self.lower, self.upper, out=img_array)
-        """Normalize the image"""
-        img_array = (img_array - img_array.mean())/img_array.std()
+        if ".npy" not in img_name:
+            np.clip(img_array, self.lower, self.upper, out=img_array)
+            """Normalize the image"""
+            img_array = (img_array - img_array.mean())/img_array.std()
         shape = img_array.shape
         
         

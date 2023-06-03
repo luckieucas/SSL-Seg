@@ -23,7 +23,7 @@ from dataset.dataset import DatasetSemi
 from dataset.sampler import BatchSampler, ClassRandomSampler
 from networks.net_factory_3d import net_factory_3d
 from dataset.dataset import TwoStreamBatchSampler
-from val_3D import test_all_case,test_all_case_BCV
+from val_3D import test_all_case
 from unet3d.losses import DiceLoss #test loss
 
 
@@ -92,7 +92,7 @@ class SemiSupervisedTrainer3D:
         self.testing_data_num = dataset_config['testing_data_num']
         self.train_list = dataset_config['train_list']
         #train_list_pl: train list for partial labeled data
-        self.train_list_pl = dataset_config['train_list_pl'] 
+        self.train_list_pl = dataset_config['train_list_pl']
         self.test_list = dataset_config['test_list']
         self.cut_upper = dataset_config['cut_upper']
         self.cut_lower = dataset_config['cut_lower']
@@ -300,10 +300,10 @@ class SemiSupervisedTrainer3D:
     def get_dataloader(self):
         self.dataloader = DataLoader(self.dataset, batch_size=self.batch_size, 
                                      shuffle=True, num_workers=2, 
-                                     pin_memory=False)
+                                     pin_memory=True)
         self.dataloader_pl = DataLoader(self.dataset_pl, batch_size=self.batch_size, 
                                      shuffle=True, num_workers=2, 
-                                     pin_memory=False)
+                                     pin_memory=True)
 
     def initialize_optimizer_and_scheduler(self):
         assert self.model is not None, "self.initialize_network must be called first"
@@ -390,7 +390,7 @@ class SemiSupervisedTrainer3D:
                                             self.batch_size, 
                                             self.batch_size-self.labeled_bs)
             self.dataloader = DataLoader(self.dataset, batch_sampler=batch_sampler,
-                            num_workers=2, pin_memory=False)
+                            num_workers=2, pin_memory=True)
             self.max_epoch = self.max_iterations // len(self.dataloader) + 1
             if self.method_name == 'UAMT':
                 self._train_UAMT()
@@ -402,7 +402,7 @@ class SemiSupervisedTrainer3D:
                 self.dataloader_pl = DataLoader(self.dataset_pl, 
                                 batch_size=4, 
                                 shuffle=True, num_workers=2, 
-                                pin_memory=False)
+                                pin_memory=True)
                 if self.FP16:
                     self._train_C3PS_FP16()
                 else:
@@ -454,7 +454,7 @@ class SemiSupervisedTrainer3D:
         if self.current_iter % 1000==0 or (self.method_name=='ConNet' and self.current_iter % 400==0):
             test_num = self.testing_data_num
 
-        avg_metric = test_all_case_BCV(model,
+        avg_metric = test_all_case(model,
                                        test_list=self.test_list,
                                        num_classes=self.num_classes,
                                        patch_size=self.method_config['patch_size_large'] if do_SR else self.patch_size,
@@ -544,7 +544,7 @@ class SemiSupervisedTrainer3D:
                     (self.current_iter<1000 and self.current_iter % 400 == 0)
                 ):
                     self.model.eval()
-                    avg_metric = test_all_case_BCV(
+                    avg_metric = test_all_case(
                         self.model,
                         test_list=self.test_list,
                         num_classes=self.num_classes,
@@ -1913,320 +1913,326 @@ class SemiSupervisedTrainer3D:
                     -0.2, 
                     0.2
                 ).to(self.device)
-                outputs1 = self.model(volume_batch + noise1)
-                outputs_soft1 = torch.softmax(outputs1, dim=1)
-                
-                #get condition list:
-                if self.use_CAC and (
-                    self.current_iter >= min(
-                        self.began_semi_iter,self.began_condition_iter
-                    )
-                ):
-                    overlap_soft1_list = []
-                    overlap_outputs1_list = []
-                    overlap_filter1_list = []
-                    for unlabeled_idx1, unlabeled_idx2 in zip(
-                        unlabeled_idxs1_batch,
-                        unlabeled_idxs2_batch
+                self.optimizer.zero_grad()
+                self.optimizer2.zero_grad()
+                with autocast():
+                    outputs1 = self.model(volume_batch + noise1)
+                    outputs_soft1 = torch.softmax(outputs1, dim=1)
+                    
+                    #get condition list:
+                    if self.use_CAC and (
+                        self.current_iter >= min(
+                            self.began_semi_iter,self.began_condition_iter
+                        )
                     ):
-                        overlap1_soft1 = outputs_soft1[
-                            unlabeled_idx1,
-                            :,
-                            ul1[0][1]:br1[0][1],
-                            ul1[1][1]:br1[1][1],
-                            ul1[2][1]:br1[2][1]
-                        ]
-                        overlap2_soft1 = outputs_soft1[
-                            unlabeled_idx2,
-                            :,
-                            ul2[0][1]:br2[0][1],
-                            ul2[1][1]:br2[1][1],
-                            ul2[2][1]:br2[2][1]
-                        ]
-                        assert overlap1_soft1.shape == overlap2_soft1.shape,(
-                            "overlap region size must equal"
-                        )
+                        overlap_soft1_list = []
+                        overlap_outputs1_list = []
+                        overlap_filter1_list = []
+                        for unlabeled_idx1, unlabeled_idx2 in zip(
+                            unlabeled_idxs1_batch,
+                            unlabeled_idxs2_batch
+                        ):
+                            overlap1_soft1 = outputs_soft1[
+                                unlabeled_idx1,
+                                :,
+                                ul1[0][1]:br1[0][1],
+                                ul1[1][1]:br1[1][1],
+                                ul1[2][1]:br1[2][1]
+                            ]
+                            overlap2_soft1 = outputs_soft1[
+                                unlabeled_idx2,
+                                :,
+                                ul2[0][1]:br2[0][1],
+                                ul2[1][1]:br2[1][1],
+                                ul2[2][1]:br2[2][1]
+                            ]
+                            assert overlap1_soft1.shape == overlap2_soft1.shape,(
+                                "overlap region size must equal"
+                            )
 
-                        # overlap region pred by model1
-                        overlap1_outputs1 = outputs1[
-                            unlabeled_idx1,
-                            :,
-                            ul1[0][1]:br1[0][1],
-                            ul1[1][1]:br1[1][1],
-                            ul1[2][1]:br1[2][1]
-                        ] # overlap batch1
-                        overlap2_outputs1 = outputs1[
-                            unlabeled_idx2,
-                            :,
-                            ul2[0][1]:br2[0][1],
-                            ul2[1][1]:br2[1][1],
-                            ul2[2][1]:br2[2][1]
-                        ] # overlap batch2
-                        assert overlap1_outputs1.shape == overlap2_outputs1.shape,(
-                            "overlap region size must equal"
-                        )
-                        overlap_outputs1_list.append(overlap1_outputs1.unsqueeze(0))
-                        overlap_outputs1_list.append(overlap2_outputs1.unsqueeze(0))
-                        
-                        overlap_soft1_tmp = (overlap1_soft1 + overlap2_soft1) / 2.
-                        max1,pseudo_mask1 = torch.max(overlap_soft1_tmp, dim=0)
-                        pred_con_list = pseudo_mask1.unique().tolist()
-                        con = self._get_condition(pred_con_list)
-                        if self.num_classes==2:  #如果类别数为2则可以利用到背景像素
-                            overlap_filter1_tmp = (
-                                (((max1>self.model1_thresh)&(pseudo_mask1!=con))|
-                                ((max1>0.8)&(pseudo_mask1==con))
-                                )
-                            ).type(torch.int16)
-                        else:
-                            if con< self.num_classes:
+                            # overlap region pred by model1
+                            overlap1_outputs1 = outputs1[
+                                unlabeled_idx1,
+                                :,
+                                ul1[0][1]:br1[0][1],
+                                ul1[1][1]:br1[1][1],
+                                ul1[2][1]:br1[2][1]
+                            ] # overlap batch1
+                            overlap2_outputs1 = outputs1[
+                                unlabeled_idx2,
+                                :,
+                                ul2[0][1]:br2[0][1],
+                                ul2[1][1]:br2[1][1],
+                                ul2[2][1]:br2[2][1]
+                            ] # overlap batch2
+                            assert overlap1_outputs1.shape == overlap2_outputs1.shape,(
+                                "overlap region size must equal"
+                            )
+                            overlap_outputs1_list.append(overlap1_outputs1.unsqueeze(0))
+                            overlap_outputs1_list.append(overlap2_outputs1.unsqueeze(0))
+                            
+                            overlap_soft1_tmp = (overlap1_soft1 + overlap2_soft1) / 2.
+                            max1,pseudo_mask1 = torch.max(overlap_soft1_tmp, dim=0)
+                            pred_con_list = pseudo_mask1.unique().tolist()
+                            con = self._get_condition(pred_con_list)
+                            if self.num_classes==2:  #如果类别数为2则可以利用到背景像素
                                 overlap_filter1_tmp = (
-                                    (((max1>0.99)&(pseudo_mask1==0))|
-                                    ((max1>0.9)&(pseudo_mask1!=con)&(pseudo_mask1!=0))|
-                                    ((max1>0.9)&(pseudo_mask1==con))
+                                    (((max1>self.model1_thresh)&(pseudo_mask1!=con))|
+                                    ((max1>0.8)&(pseudo_mask1==con))
                                     )
                                 ).type(torch.int16)
                             else:
-                                overlap_filter1_tmp = (
-                                    (((max1>0.99)&(pseudo_mask1==0))|
-                                    ((max1>0.9)&(pseudo_mask1!=0)))
+                                if con< self.num_classes:
+                                    overlap_filter1_tmp = (
+                                        (((max1>0.99)&(pseudo_mask1==0))|
+                                        ((max1>0.9)&(pseudo_mask1!=con)&(pseudo_mask1!=0))|
+                                        ((max1>0.9)&(pseudo_mask1==con))
+                                        )
                                     ).type(torch.int16)
-                            # overlap_filter1_tmp = (
-                            #     (max1>0.9)&(pseudo_mask1==con)
-                            # ).type(torch.int16)
-                        
-                        overlap_soft1_list.append(overlap_soft1_tmp.unsqueeze(0))
-                        overlap_filter1_list.append(overlap_filter1_tmp.unsqueeze(0))
-                    overlap_soft1 = torch.cat(overlap_soft1_list, 0)
-                    overlap_outputs1 = torch.cat(overlap_outputs1_list, 0)
-                    overlap_filter1 = torch.cat(overlap_filter1_list, 0)
+                                else:
+                                    overlap_filter1_tmp = (
+                                        (((max1>0.99)&(pseudo_mask1==0))|
+                                        ((max1>0.9)&(pseudo_mask1!=0)))
+                                        ).type(torch.int16)
+                                # overlap_filter1_tmp = (
+                                #     (max1>0.9)&(pseudo_mask1==con)
+                                # ).type(torch.int16)
+                            
+                            overlap_soft1_list.append(overlap_soft1_tmp.unsqueeze(0))
+                            overlap_filter1_list.append(overlap_filter1_tmp.unsqueeze(0))
+                        overlap_soft1 = torch.cat(overlap_soft1_list, 0)
+                        overlap_outputs1 = torch.cat(overlap_outputs1_list, 0)
+                        overlap_filter1 = torch.cat(overlap_filter1_list, 0)
 
-                
-                
-                    #get condition list pred by model1
-                    condition_batch[unlabeled_idxs_batch] = con
-                
-                # random noise add to input of model2
-                noise2 = torch.clamp(
-                    torch.randn_like(volume_batch) * 0.1, 
-                    -0.2, 
-                    0.2
-                ).to(self.device)
+                    
+                    
+                        #get condition list pred by model1
+                        condition_batch[unlabeled_idxs_batch] = con
+                    
+                    # random noise add to input of model2
+                    noise2 = torch.clamp(
+                        torch.randn_like(volume_batch) * 0.1, 
+                        -0.2, 
+                        0.2
+                    ).to(self.device)
 
-                outputs2 = self.model2(volume_batch+noise2, condition_batch)
-                outputs_soft2 = torch.softmax(outputs2, dim=1)
-                # label_batch_con = (
-                #     label_batch==condition_batch.unsqueeze(-1).unsqueeze(-1)
-                # ).long()
-                label_batch_con = self._get_label_batch_for_conditional_net(
-                    label_batch, condition_batch
-                )
-
-                self.consistency_weight = self._get_current_consistency_weight(
-                    self.current_iter//150
-                )
-                loss1 = 0.5 * (
-                    self.ce_loss(
-                        outputs1[labeled_idxs_batch],
-                        label_batch[labeled_idxs_batch].long()
-                    ) +
-                    self.dice_loss(
-                        outputs_soft1[labeled_idxs_batch],
-                        label_batch[labeled_idxs_batch].unsqueeze(1)
+                    outputs2 = self.model2(volume_batch+noise2, condition_batch)
+                    outputs_soft2 = torch.softmax(outputs2, dim=1)
+                    # label_batch_con = (
+                    #     label_batch==condition_batch.unsqueeze(-1).unsqueeze(-1)
+                    # ).long()
+                    label_batch_con = self._get_label_batch_for_conditional_net(
+                        label_batch, condition_batch
                     )
-                )
-                loss2 = 0.5 * (
-                    self.ce_loss(
-                        outputs2[labeled_idxs_batch],
-                        label_batch_con[labeled_idxs_batch].long()
-                    ) + 
-                    self.dice_loss_con(
-                        outputs_soft2[labeled_idxs_batch],
-                        label_batch_con[labeled_idxs_batch].unsqueeze(1)
-                    )
-                )
 
-                if self.use_CAC and (
-                    self.current_iter >= min(
-                        self.began_semi_iter,self.began_condition_iter
+                    self.consistency_weight = self._get_current_consistency_weight(
+                        self.current_iter//150
                     )
-                ):
-                    overlap_soft2_list = []
-                    overlap_outputs2_list = []
-                    overlap_filter2_list = []
-                    for unlabeled_idx1, unlabeled_idx2 in zip(
-                        unlabeled_idxs1_batch,
-                        unlabeled_idxs2_batch
+                    loss1 = 0.5 * (
+                        self.ce_loss(
+                            outputs1[labeled_idxs_batch],
+                            label_batch[labeled_idxs_batch].long()
+                        ) +
+                        self.dice_loss(
+                            outputs_soft1[labeled_idxs_batch],
+                            label_batch[labeled_idxs_batch].unsqueeze(1)
+                        )
+                    )
+                    loss2 = 0.5 * (
+                        self.ce_loss(
+                            outputs2[labeled_idxs_batch],
+                            label_batch_con[labeled_idxs_batch].long()
+                        ) + 
+                        self.dice_loss_con(
+                            outputs_soft2[labeled_idxs_batch],
+                            label_batch_con[labeled_idxs_batch].unsqueeze(1)
+                        )
+                    )
+
+                    if self.use_CAC and (
+                        self.current_iter >= min(
+                            self.began_semi_iter,self.began_condition_iter
+                        )
                     ):
-                        # overlap region pred by model2
-                        overlap1_soft2 = outputs_soft2[
-                            unlabeled_idx1,
-                            :,
-                            ul1[0][1]:br1[0][1],
-                            ul1[1][1]:br1[1][1],
-                            ul1[2][1]:br1[2][1]
-                        ]
-                        overlap2_soft2 = outputs_soft2[
-                            unlabeled_idx2,
-                            :,
-                            ul2[0][1]:br2[0][1],
-                            ul2[1][1]:br2[1][1],
-                            ul2[2][1]:br2[2][1]
-                        ]
-                        assert overlap1_soft2.shape == overlap2_soft2.shape,(
-                            "overlap region size must equal"
-                        )
-                        
-                        # overlap region outputs pred by model2
-                        overlap1_outputs2 = outputs2[
-                            unlabeled_idx1,
-                            :,
-                            ul1[0][1]:br1[0][1],
-                            ul1[1][1]:br1[1][1],
-                            ul1[2][1]:br1[2][1]
-                        ]
-                        overlap2_outputs2 = outputs2[
-                            unlabeled_idx2,
-                            :,
-                            ul2[0][1]:br2[0][1],
-                            ul2[1][1]:br2[1][1],
-                            ul2[2][1]:br2[2][1]
-                        ]
-                        assert overlap1_outputs2.shape == overlap2_outputs2.shape,(
-                            "overlap region size must equal"
-                        )
-                        overlap_outputs2_list.append(overlap1_outputs2.unsqueeze(0))
-                        overlap_outputs2_list.append(overlap2_outputs2.unsqueeze(0))
+                        overlap_soft2_list = []
+                        overlap_outputs2_list = []
+                        overlap_filter2_list = []
+                        for unlabeled_idx1, unlabeled_idx2 in zip(
+                            unlabeled_idxs1_batch,
+                            unlabeled_idxs2_batch
+                        ):
+                            # overlap region pred by model2
+                            overlap1_soft2 = outputs_soft2[
+                                unlabeled_idx1,
+                                :,
+                                ul1[0][1]:br1[0][1],
+                                ul1[1][1]:br1[1][1],
+                                ul1[2][1]:br1[2][1]
+                            ]
+                            overlap2_soft2 = outputs_soft2[
+                                unlabeled_idx2,
+                                :,
+                                ul2[0][1]:br2[0][1],
+                                ul2[1][1]:br2[1][1],
+                                ul2[2][1]:br2[2][1]
+                            ]
+                            assert overlap1_soft2.shape == overlap2_soft2.shape,(
+                                "overlap region size must equal"
+                            )
+                            
+                            # overlap region outputs pred by model2
+                            overlap1_outputs2 = outputs2[
+                                unlabeled_idx1,
+                                :,
+                                ul1[0][1]:br1[0][1],
+                                ul1[1][1]:br1[1][1],
+                                ul1[2][1]:br1[2][1]
+                            ]
+                            overlap2_outputs2 = outputs2[
+                                unlabeled_idx2,
+                                :,
+                                ul2[0][1]:br2[0][1],
+                                ul2[1][1]:br2[1][1],
+                                ul2[2][1]:br2[2][1]
+                            ]
+                            assert overlap1_outputs2.shape == overlap2_outputs2.shape,(
+                                "overlap region size must equal"
+                            )
+                            overlap_outputs2_list.append(overlap1_outputs2.unsqueeze(0))
+                            overlap_outputs2_list.append(overlap2_outputs2.unsqueeze(0))
 
-                        
-                        overlap_soft2_tmp = (overlap1_soft2 + overlap2_soft2) / 2.
-                        max2,pseudo_mask2 = torch.max(overlap_soft2_tmp, dim=0)
-                        if self.num_classes==2:
-                            overlap_filter2_tmp = ((
-                                max2>self.model2_thresh
-                            )).type(torch.int16)
-                        else:
-                            if con < self.num_classes:
+                            
+                            overlap_soft2_tmp = (overlap1_soft2 + overlap2_soft2) / 2.
+                            max2,pseudo_mask2 = torch.max(overlap_soft2_tmp, dim=0)
+                            if self.num_classes==2:
                                 overlap_filter2_tmp = ((
                                     max2>self.model2_thresh
-                                ) & (
-                                    pseudo_mask2>0
                                 )).type(torch.int16)
                             else:
-                                overlap_filter2_tmp = ((
-                                    max2>self.model2_thresh
-                                ) & (
-                                    pseudo_mask2==0
-                                )).type(torch.int16)
-                        overlap_soft2_list.append(overlap_soft2_tmp.unsqueeze(0))
-                        overlap_filter2_list.append(overlap_filter2_tmp.unsqueeze(0))
-                    overlap_soft2 = torch.cat(overlap_soft2_list, 0)
-                    overlap_outputs2 = torch.cat(overlap_outputs2_list, 0)
-                    overlap_filter2 = torch.cat(overlap_filter2_list, 0)
-                if self.current_iter < self.began_condition_iter:
-                    pseudo_supervision1 = torch.FloatTensor([0]).to(self.device)
-                else:
-                    if self.use_CAC:
-                        overlap_pseudo_outputs2 = torch.argmax(
-                            overlap_soft2.detach(),
-                            dim=1,
-                            keepdim=False
-                        )
-                        if overlap_pseudo_outputs2.sum() == 0 or overlap_filter2.sum()==0:
-                            pseudo_supervision1 = torch.FloatTensor([0]).to(self.device)
+                                if con < self.num_classes:
+                                    overlap_filter2_tmp = ((
+                                        max2>self.model2_thresh
+                                    ) & (
+                                        pseudo_mask2>0
+                                    )).type(torch.int16)
+                                else:
+                                    overlap_filter2_tmp = ((
+                                        max2>self.model2_thresh
+                                    ) & (
+                                        pseudo_mask2==0
+                                    )).type(torch.int16)
+                            overlap_soft2_list.append(overlap_soft2_tmp.unsqueeze(0))
+                            overlap_filter2_list.append(overlap_filter2_tmp.unsqueeze(0))
+                        overlap_soft2 = torch.cat(overlap_soft2_list, 0)
+                        overlap_outputs2 = torch.cat(overlap_outputs2_list, 0)
+                        overlap_filter2 = torch.cat(overlap_filter2_list, 0)
+                    if self.current_iter < self.began_condition_iter:
+                        pseudo_supervision1 = torch.FloatTensor([0]).to(self.device)
+                    else:
+                        if self.use_CAC:
+                            overlap_pseudo_outputs2 = torch.argmax(
+                                overlap_soft2.detach(),
+                                dim=1,
+                                keepdim=False
+                            )
+                            if overlap_pseudo_outputs2.sum() == 0 or overlap_filter2.sum()==0:
+                                pseudo_supervision1 = torch.FloatTensor([0]).to(self.device)
+                            else:
+                                overlap_pseudo_outputs2 = torch.cat(
+                                    [overlap_pseudo_outputs2, overlap_pseudo_outputs2]
+                                )
+                                overlap_pseudo_filter2 = torch.cat(
+                                    [overlap_filter2, overlap_filter2]
+                                )
+                                ce_pseudo_supervision1 = self._cross_entropy_loss_con(
+                                    overlap_outputs1,
+                                    overlap_pseudo_outputs2,
+                                    condition_batch[unlabeled_idx_batch],
+                                    overlap_pseudo_filter2
+                                )
+                                B,C,D,W,H = overlap_outputs1.shape
+                                # overlap_soft1_con = torch.softmax(overlap_outputs1,dim=1)
+                                # overlap_outputs_con = torch.zeros(B,2,D,W,H)
+                                # overlap_outputs_con[:,1,:,:,:] = overlap_soft1_con[
+                                #     :,condition_batch[unlabeled_idx_batch].item(),:,:,:
+                                # ]
+                                # overlap_outputs_con[:,0,:,:,:] = 1 - overlap_outputs_con[:,1,:,:,:]
+                                # overlap_outputs_con[:,1,:,:,:][overlap_pseudo_filter2==0]=0 # filer output
+                                # dice_pseudo_supervision1 = self.dice_loss_con(
+                                #     overlap_outputs_con.to(self.device),
+                                #     (overlap_pseudo_outputs2*overlap_pseudo_filter2).unsqueeze(1),
+                                #     skip_id=0
+                                # )
+                                pseudo_supervision1 = ce_pseudo_supervision1 
                         else:
-                            overlap_pseudo_outputs2 = torch.cat(
-                                [overlap_pseudo_outputs2, overlap_pseudo_outputs2]
+                            pseudo_outputs2 = torch.argmax(
+                                outputs_soft2[self.labeled_bs:].detach(),
+                                dim=1,
+                                keepdim=False
                             )
-                            overlap_pseudo_filter2 = torch.cat(
-                                [overlap_filter2, overlap_filter2]
+                            pseudo_supervision1 = self._cross_entropy_loss_con(
+                                outputs1[self.labeled_bs:],
+                                pseudo_outputs2,
+                                condition_batch[self.labeled_bs:]
                             )
-                            ce_pseudo_supervision1 = self._cross_entropy_loss_con(
-                                overlap_outputs1,
-                                overlap_pseudo_outputs2,
-                                condition_batch[unlabeled_idx_batch],
-                                overlap_pseudo_filter2
-                            )
-                            B,C,D,W,H = overlap_outputs1.shape
-                            # overlap_soft1_con = torch.softmax(overlap_outputs1,dim=1)
-                            # overlap_outputs_con = torch.zeros(B,2,D,W,H)
-                            # overlap_outputs_con[:,1,:,:,:] = overlap_soft1_con[
-                            #     :,condition_batch[unlabeled_idx_batch].item(),:,:,:
-                            # ]
-                            # overlap_outputs_con[:,0,:,:,:] = 1 - overlap_outputs_con[:,1,:,:,:]
-                            # overlap_outputs_con[:,1,:,:,:][overlap_pseudo_filter2==0]=0 # filer output
-                            # dice_pseudo_supervision1 = self.dice_loss_con(
-                            #     overlap_outputs_con.to(self.device),
-                            #     (overlap_pseudo_outputs2*overlap_pseudo_filter2).unsqueeze(1),
-                            #     skip_id=0
-                            # )
-                            pseudo_supervision1 = ce_pseudo_supervision1 
+                    if self.current_iter < self.began_semi_iter or overlap_filter1.sum()==0:
+                        pseudo_supervision2 = torch.FloatTensor([0]).to(self.device)
                     else:
-                        pseudo_outputs2 = torch.argmax(
-                            outputs_soft2[self.labeled_bs:].detach(),
-                            dim=1,
-                            keepdim=False
-                        )
-                        pseudo_supervision1 = self._cross_entropy_loss_con(
-                            outputs1[self.labeled_bs:],
-                            pseudo_outputs2,
-                            condition_batch[self.labeled_bs:]
-                        )
-                if self.current_iter < self.began_semi_iter or overlap_filter1.sum()==0:
-                    pseudo_supervision2 = torch.FloatTensor([0]).to(self.device)
-                else:
-                    if self.use_CAC:
-                        overlap_pseudo_outputs1 = torch.argmax(
-                            overlap_soft1.detach(), 
-                            dim=1, 
-                            keepdim=False
-                        )
-                        overlap_pseudo_outputs1 = torch.cat(
-                            [overlap_pseudo_outputs1, overlap_pseudo_outputs1]
-                        )
-                        overlap_pseudo_filter1 = torch.cat(
-                            [overlap_filter1, overlap_filter1]
-                        )
-                        target_ce_con = self._get_label_batch_for_conditional_net(
-                            overlap_pseudo_outputs1,condition_batch[unlabeled_idxs_batch]
-                        )
-                        target_ce_con[overlap_pseudo_filter1==0] = 255
-                        ce_pseudo_supervision2 = self.ce_loss(
-                            overlap_outputs2, 
-                            target_ce_con
-                        )
-                        dice_pseudo_supervision2 = self.dice_loss_con(
-                            torch.softmax(overlap_outputs2,dim=1)*overlap_pseudo_filter1,
-                            ((
-                                overlap_pseudo_outputs1==condition_batch[unlabeled_idxs_batch].unsqueeze(-1).unsqueeze(-1)
-                            ).long()*overlap_pseudo_filter1).unsqueeze(1),
-                            skip_id=0
-                        )
-                        pseudo_supervision2 = ce_pseudo_supervision2 + dice_pseudo_supervision2
-                    else:
-                        pseudo_outputs1 = torch.argmax(
-                            outputs_soft1[self.labeled_bs:].detach(), 
-                            dim=1, 
-                            keepdim=False
-                        )
-                        pseudo_supervision2 = self.ce_loss(
-                            outputs2[self.labeled_bs:], 
-                            (pseudo_outputs1==condition_batch[self.labeled_bs:].\
-                                unsqueeze(-1).unsqueeze(-1)).long()
-                        )
-                
+                        if self.use_CAC:
+                            overlap_pseudo_outputs1 = torch.argmax(
+                                overlap_soft1.detach(), 
+                                dim=1, 
+                                keepdim=False
+                            )
+                            overlap_pseudo_outputs1 = torch.cat(
+                                [overlap_pseudo_outputs1, overlap_pseudo_outputs1]
+                            )
+                            overlap_pseudo_filter1 = torch.cat(
+                                [overlap_filter1, overlap_filter1]
+                            )
+                            target_ce_con = self._get_label_batch_for_conditional_net(
+                                overlap_pseudo_outputs1,condition_batch[unlabeled_idxs_batch]
+                            )
+                            target_ce_con[overlap_pseudo_filter1==0] = 255
+                            ce_pseudo_supervision2 = self.ce_loss(
+                                overlap_outputs2, 
+                                target_ce_con
+                            )
+                            dice_pseudo_supervision2 = self.dice_loss_con(
+                                torch.softmax(overlap_outputs2,dim=1)*overlap_pseudo_filter1,
+                                ((
+                                    overlap_pseudo_outputs1==condition_batch[unlabeled_idxs_batch].unsqueeze(-1).unsqueeze(-1)
+                                ).long()*overlap_pseudo_filter1).unsqueeze(1),
+                                skip_id=0
+                            )
+                            pseudo_supervision2 = ce_pseudo_supervision2 + dice_pseudo_supervision2
+                        else:
+                            pseudo_outputs1 = torch.argmax(
+                                outputs_soft1[self.labeled_bs:].detach(), 
+                                dim=1, 
+                                keepdim=False
+                            )
+                            pseudo_supervision2 = self.ce_loss(
+                                outputs2[self.labeled_bs:], 
+                                (pseudo_outputs1==condition_batch[self.labeled_bs:].\
+                                    unsqueeze(-1).unsqueeze(-1)).long()
+                            )
+                    
 
-                model1_loss = loss1 + self.consistency_weight * pseudo_supervision1
-                model2_loss = loss2 + self.consistency_weight * pseudo_supervision2
+                    model1_loss = loss1 + self.consistency_weight * pseudo_supervision1
+                    model2_loss = loss2 + self.consistency_weight * pseudo_supervision2
 
-                loss = model1_loss + model2_loss
-
-                self.optimizer.zero_grad()
-                self.optimizer2.zero_grad() 
-                model1_loss.backward()
-                model2_loss.backward()
-                self.optimizer.step()
-                self.optimizer2.step()
+                    loss = model1_loss + model2_loss
+                self.grad_scaler1.scale(model1_loss).backward()
+                self.grad_scaler1.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 12)
+                self.grad_scaler1.step(self.optimizer)
+                self.grad_scaler1.update()
+                self.grad_scaler2.scale(model2_loss).backward()
+                self.grad_scaler2.unscale_(self.optimizer2)
+                torch.nn.utils.clip_grad_norm_(self.model2.parameters(), 12)
+                self.grad_scaler2.step(self.optimizer2)
+                self.grad_scaler2.update()
 
                 self.current_iter += 1
                 for param_group in self.optimizer.param_groups:

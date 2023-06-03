@@ -11,8 +11,12 @@ from medpy import metric
 from tqdm import tqdm
 from random import shuffle
 import random
+from monai.inferers import sliding_window_inference
 from monai.metrics import DiceMetric
-
+from monai.transforms import Compose,LoadImage,ToTensor
+from monai.metrics import DiceMetric
+from batchgenerators.utilities.file_and_folder_operations import load_pickle,join
+from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
 
 def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1, 
                      condition=-1, do_SR=False, method='regular', return_scoremap=False):
@@ -100,39 +104,44 @@ def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1,
     else:
         return label_map
 
+def process_fn(seg_prob_tuple, window_data, importance_map_):
+    """seg_prob_tuple, importance_map = 
+    process_fn(seg_prob_tuple, window_data, importance_map_)
+    """
+    if len(seg_prob_tuple)>0 and isinstance(seg_prob_tuple, (tuple, list)):
+        seg_prob = torch.softmax(seg_prob_tuple[0],dim=1)
+        return tuple(seg_prob.unsqueeze(0))+seg_prob_tuple[1:],importance_map_
+    else:
+        seg_prob = torch.softmax(seg_prob_tuple,dim=1)
+        return seg_prob,importance_map_
 
-def calculate_metric(gt, pred, cal_hd95=False):
+def test_single_case_monai(net, image, patch_size, overlap=0.5,):
+    device = next(net.parameters()).device
+    image = torch.from_numpy(image).unsqueeze(0).unsqueeze(0).to(device)
+    with torch.no_grad():
+        prediction = sliding_window_inference(
+                    image.float(),patch_size,2,net,overlap=overlap,
+                    mode='gaussian',process_fn=process_fn
+                ).cpu().numpy().squeeze()
+    label_map = np.argmax(prediction, axis=0)
+    return label_map
+
+def calculate_metric(gt, pred, cal_hd95=False, cal_asd=False):
     if pred.sum() > 0 and gt.sum() > 0:
         dice = metric.binary.dc(pred, gt)
         if cal_hd95:
             hd95 = metric.binary.hd95(pred, gt)
         else:
             hd95 = 0.0
-        return np.array([dice, hd95])
+        if cal_asd:
+            asd = metric.binary.asd(pred, gt)
+        else:
+            asd = 0.0
+        return np.array([dice, hd95, asd])
     else:
-        return np.zeros(2)
+        return np.array([0.0,150,150])
 
-
-def test_all_case(net, base_dir, test_list="full_test.list", num_classes=4, patch_size=(48, 160, 160), stride_xy=32, stride_z=24):
-    with open(base_dir + '/{}'.format(test_list), 'r') as f:
-        image_list = f.readlines()
-    image_list = [base_dir + "/data/{}.h5".format(
-        item.replace('\n', '').split(",")[0]) for item in image_list]
-    total_metric = np.zeros((num_classes-1, 2))
-    print("Validation begin")
-    for image_path in tqdm(image_list):
-        h5f = h5py.File(image_path, 'r')
-        image = h5f['image'][:]
-        label = h5f['label'][:]
-        prediction = test_single_case(
-            net, image, stride_xy, stride_z, patch_size, num_classes=num_classes)
-        for i in range(1, num_classes):
-            total_metric[i-1, :] += calculate_metric(label == i, prediction == i)
-    print("Validation end")
-    return total_metric / len(image_list)
-
-
-def test_all_case_BCV(net, test_list="full_test.list", num_classes=4, 
+def test_all_case(net, test_list="full_test.list", num_classes=4, 
                         patch_size=(48, 160, 160), stride_xy=32, stride_z=24, 
                         do_condition=False, do_SR=False,method="regular",
                         cal_metric=True,
@@ -142,7 +151,8 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
                         cut_upper=200,
                         cut_lower=-68,
                         con_list=None,
-                        normalization='Zscore'):
+                        normalization='Zscore',
+                        test_all_cases=False):
     if os.path.isdir(test_list):
         image_list = glob(test_list+"*.nii.gz")
     else:
@@ -150,21 +160,27 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
             image_list = [img.replace('\n','') for img in f.readlines()]
     print("Total test images:",len(image_list))
     if con_list:
-        total_metric = np.zeros((len(con_list), 2))
+        total_metric = np.zeros((len(con_list), 3))
     else:
-        total_metric = np.zeros((num_classes-1, 2))
+        total_metric = np.zeros((num_classes-1, 3))
     print("Validation begin")
     if con_list:
         condition_list = con_list # for condition learning
     else:
         condition_list = [i for i in range(1,num_classes)]
     #shuffle(condition_list)
-    dice_metric = DiceMetric(include_background=False)
     shuffle(image_list)
     if not do_condition:
         test_num = len(image_list)
+    if "Flare" in test_list:
+        #for flare data, randomly select 10 cases for validatation
+        test_num = 20
+        if do_condition:
+            test_num = 6
+    if test_all_cases:
+        test_num = len(image_list)
     for i, image_path in enumerate(tqdm(image_list)):
-        if i>test_num-1 and do_condition:
+        if i>test_num-1:
             break
         if len(image_path.strip().split()) > 1:
             image_path, mask_path = image_path.strip().split()
@@ -172,23 +188,31 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
             mask_path = image_path.replace('img','label')
         if cal_metric:
             assert os.path.isfile(mask_path),"invalid mask path error"
-        image_sitk = sitk.ReadImage(image_path)
-        image = sitk.GetArrayFromImage(image_sitk)
+        if ".npy" in image_path:
+            image = np.load(image_path).squeeze()
+        else:
+            image_sitk = sitk.ReadImage(image_path)
+            image = sitk.GetArrayFromImage(image_sitk)
         
         if cal_metric: # whether calculate metrics
-            label = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
+            if ".npy" in mask_path:
+                label = np.load(mask_path).squeeze()
+                label[label<0] = 0
+            else:
+                label = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
         else:
             label = np.zeros_like(image)
-        if "heartMR" in image_path or normalization=='MinMax':
-            min_val_1p=np.percentile(image,1)
-            max_val_99p=np.percentile(image,99)
-            # min-max norm on total 3D volume
-            print('min max norm')
-            image=(image-min_val_1p)/(max_val_99p-min_val_1p)
-            np.clip(image, 0.0, 1.0, out=image)
-        else:
-            np.clip(image,cut_lower,cut_upper,out=image)
-            image = (image - image.mean()) / image.std()
+        if ".npy" not in image_path:
+            if "heartMR" in image_path or normalization=='MinMax':
+                min_val_1p=np.percentile(image,1)
+                max_val_99p=np.percentile(image,99)
+                # min-max norm on total 3D volume
+                print('min max norm')
+                image=(image-min_val_1p)/(max_val_99p-min_val_1p)
+                np.clip(image, 0.0, 1.0, out=image)
+            else:
+                np.clip(image,cut_lower,cut_upper,out=image)
+                image = (image - image.mean()) / image.std()
         if do_condition:
             print(f"===>test image:{image_path}")
             for condition in condition_list:
@@ -203,25 +227,33 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
                     print(f"condition:{condition}, metric:{metric}")
                     total_metric[condition-1, :] += metric
         else:
-            prediction = test_single_case(
-                net, image, stride_xy, stride_z, patch_size, 
-                num_classes=num_classes, condition=-1, do_SR=do_SR,
-                method=method)
+            # prediction = test_single_case(
+            #     net, image, stride_xy, stride_z, patch_size, 
+            #     num_classes=num_classes, condition=-1, do_SR=do_SR,
+            #     method=method)
+            prediction = test_single_case_monai(net=net, image=image, 
+                                                patch_size=patch_size)
             if cal_metric:
                 for i in range(1, num_classes):
-                    dice = dice_metric(torch.from_numpy(prediction==i),
-                                   torch.from_numpy(label==i))
-                    print(dice)
-                    total_metric[i-1, :] += calculate_metric((label == i).astype(np.int32),
-                                                             (prediction == i).astype(np.int32))
+                    total_metric[i-1, :] += calculate_metric(
+                        gt=(label == i).astype(np.int32),
+                        pred=(prediction == i).astype(np.int32),
+                        cal_asd=True)
         
         # save prediction
-        if save_prediction: 
-            spacing = image_sitk.GetSpacing()
-            pred_itk = sitk.GetImageFromArray(prediction.astype(np.uint8))
-            pred_itk.SetSpacing(spacing)
+        if save_prediction:
             _,image_name = os.path.split(image_path)
-            sitk.WriteImage(pred_itk, prediction_save_path+image_name.replace(".nii.gz","_pred.nii.gz"))
+    
+            if ".npy" not in image_path:
+                spacing = image_sitk.GetSpacing()
+                pred_itk = sitk.GetImageFromArray(prediction.astype(np.uint8))
+                pred_itk.SetSpacing(spacing)
+                sitk.WriteImage(pred_itk, prediction_save_path+image_name.replace(".nii.gz","_pred.nii.gz"))
+            else:
+                save_name = join(prediction_save_path,image_name.replace(".npy","_pred.nii.gz"))
+                image_reader_writer = SimpleITKIO()
+                properties = load_pickle(image_path.replace(".npy",".pkl"))
+                image_reader_writer.write_seg(prediction, save_name, properties)
 
     print("Validation end")
     if con_list:

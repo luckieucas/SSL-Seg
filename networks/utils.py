@@ -118,11 +118,8 @@ class UnetConv3(nn.Module):
             init_weights(m, init_type='kaiming')
 
     def forward(self, inputs):
-        print(f"inputs shape: {inputs.shape}")
         outputs = self.conv1(inputs)
-        print(f"outputs shape: {outputs.shape}")
         outputs = self.conv2(outputs)
-        print(f"outpupts shape: {outputs.shape}")
         return outputs
 
 

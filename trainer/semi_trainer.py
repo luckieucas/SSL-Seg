@@ -23,7 +23,7 @@ from dataset.dataset import DatasetSemi
 from dataset.sampler import BatchSampler, ClassRandomSampler
 from networks.net_factory_3d import net_factory_3d
 from dataset.dataset import TwoStreamBatchSampler
-from val_3D import test_all_case,test_all_case_BCV
+from val_3D import test_all_case
 from unet3d.losses import DiceLoss #test loss
 
 
@@ -453,7 +453,7 @@ class SemiSupervisedTrainerBase:
         if self.current_iter % 1000==0 or (self.method_name=='ConNet' and self.current_iter % 400==0):
             test_num = self.testing_data_num
 
-        avg_metric = test_all_case_BCV(model,
+        avg_metric = test_all_case(model,
                                        test_list=self.test_list,
                                        num_classes=self.num_classes,
                                        patch_size=self.method_config['patch_size_large'] if do_SR else self.patch_size,
@@ -543,7 +543,7 @@ class SemiSupervisedTrainerBase:
                     (self.current_iter<1000 and self.current_iter % 400 == 0)
                 ):
                     self.model.eval()
-                    avg_metric = test_all_case_BCV(
+                    avg_metric = test_all_case(
                         self.model,
                         test_list=self.test_list,
                         num_classes=self.num_classes,

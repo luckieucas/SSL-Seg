@@ -20,9 +20,10 @@ from typing import OrderedDict
 import yaml
 import argparse
 from glob import glob
-
+from batchgenerators.augmentations.utils import pad_nd_image
 from networks.net_factory_3d import net_factory_3d
 from batchgenerators.utilities.file_and_folder_operations import save_json
+from val_3D import test_all_case
 
 task_name_id_dict={"full":0,"spleen":1,"kidney":2,"liver":4,"pancreas":5,
                    "heart":0}
@@ -42,7 +43,8 @@ parser.add_argument(
 class_id_name_dict = {
     'MMWHS':['MYO', 'LA', 'LV', 'RA', 'AA', 'PA', 'RV'],
     'BCV':['Spleen', 'Right Kidney', 'Left Kidney','Liver','Pancreas'],
-    'LA':['LA']
+    'LA':['LA'],
+    'FLARE':['Liver','Kidney','Spleen','Pancreas']
 }
 
 def test_single_case(net, image, stride_x,stride_y, stride_z, patch_size, 
@@ -150,7 +152,7 @@ def cal_metric(gt, pred, cal_hd95=False, cal_asd=False, spacing=None):
 
 
 
-def test_all_case_BCV(net, test_list="full_test.list", num_classes=4, 
+def test_all_case_BCV_old(net, test_list="full_test.list", num_classes=4, 
                       patch_size=(48, 160, 160), stride_x=32, 
                       stride_y=32, stride_z=24, 
                       condition=-1,method="regular",cal_hd95=False,
@@ -280,27 +282,22 @@ if __name__ == '__main__':
                                 class_num=dataset_config['num_classes'],
                                 model_config=config['model'])
     model.load_state_dict(torch.load(model_path, map_location="cuda:0"))  
-    #test_list = dataset_config['test_list']
-    test_list = '/data/liupeng/semi-supervised_segmentation/3D_U-net_baseline/datasets/test_full.txt'
+    test_list = dataset_config['test_list']
+    #test_list = '/data/liupeng/semi-supervised_segmentation/3D_U-net_baseline/datasets/test_full.txt'
     patch_size = config['DATASET']['patch_size']
     model = model.cuda()
     model.eval()
-    avg_metric = test_all_case_BCV(
-                        model,
-                        test_list=test_list,
+    avg_metric = test_all_case(model,test_list=test_list,
                         num_classes=dataset_config['num_classes'], 
                         patch_size=patch_size,
-                        stride_x=48, 
-                        stride_y=80,
-                        stride_z=80,
-                        cal_hd95=False,
-                        cal_asd=True,
+                        stride_xy=64, 
+                        stride_z=64,
                         cut_upper=cut_upper,
                         cut_lower=cut_lower,
                         save_prediction=True,
                         prediction_save_path=pred_save_path,
-                        class_name_list=class_name_list,
-                        method = method
+                        method = method,
+                        test_all_cases=True
                     )
     print(avg_metric)
     print(avg_metric[:, 0].mean(),avg_metric[:,1].mean(), avg_metric[:,2].mean())

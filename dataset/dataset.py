@@ -156,10 +156,19 @@ class DatasetSemi(dataset):
         """get task name"""
         _,img_name = os.path.split(img_path)
         """read image and mask"""
-        image = sitk.ReadImage(img_path)
-        mask = sitk.ReadImage(mask_path)
-        img_array = sitk.GetArrayFromImage(image) 
-        mask_array = sitk.GetArrayFromImage(mask)
+        if ".npy" in img_name:
+            img_array = np.load(img_path).squeeze()
+            if index < self.labeled_num:
+                mask_array = np.load(mask_path).squeeze()
+                mask_array[mask_array<0] = 0
+            else:
+                mask_array = np.zeros_like(img_array)   
+        else:
+            img_array = sitk.GetArrayFromImage(sitk.ReadImage(img_path))
+            if index < self.labeled_num:
+                mask_array = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
+            else:
+                mask_array = np.zeros_like(img_array)   
         mask_array = mask_array.astype(np.uint8)
         if self.random_rotflip:
             k = np.random.randint(0, 4)
@@ -168,21 +177,23 @@ class DatasetSemi(dataset):
             axis = np.random.randint(0, 2)
             img_array = np.flip(image, axis=axis).copy()
             mask_array = np.flip(label, axis=axis).copy()
-        img_shape = img_array.shape
         
         # padding image and mask when image shape is smaller than patch size
         img_array = pad_nd_image(img_array,self.patch_size)
         mask_array = pad_nd_image(mask_array,self.patch_size)
+        img_shape = img_array.shape
+
 
         # 将灰度值在阈值之外的截断掉
         """Normalize the image"""
-        if "heartMR" in img_name or self.normalization=='MinMax':
-            img_array = self.normalize_minmax_data(img_array)
-            np.clip(img_array, 0.0, 1.0, out=img_array) # norm to(0,1)
-            print('min max norm')
-        else:
-            np.clip(img_array,self.lower, self.upper, out=img_array)
-            img_array = (img_array - img_array.mean())/img_array.std()
+        if ".npy" not in img_name:
+            if "heartMR" in img_name or self.normalization=='MinMax':
+                img_array = self.normalize_minmax_data(img_array)
+                np.clip(img_array, 0.0, 1.0, out=img_array) # norm to(0,1)
+                print('min max norm')
+            else:
+                np.clip(img_array,self.lower, self.upper, out=img_array)
+                img_array = (img_array - img_array.mean())/img_array.std()
         img_shape = img_array.shape
         
         """get image patch"""
