@@ -11,34 +11,36 @@ import torch
 import torch.backends.cudnn as cudnn
 
 from trainer.semi_trainer_3D import SemiSupervisedTrainer3D
-from trainer.semi_trainer_2D import SemiSupervisedTrainer2D
+#from trainer.semi_trainer_2D import SemiSupervisedTrainer2D
 from utils.util import save_config
 
 
-from torch.utils.data import dataloader
-from torch.multiprocessing import reductions
-from multiprocessing.reduction import ForkingPickler
+# from torch.utils.data import dataloader
+# from torch.multiprocessing import reductions
+# from multiprocessing.reduction import ForkingPickler
 
-default_collate_func = dataloader.default_collate
+# default_collate_func = dataloader.default_collate
 
 
-def default_collate_override(batch):
-  dataloader._use_shared_memory = False
-  return default_collate_func(batch)
+# def default_collate_override(batch):
+#   dataloader._use_shared_memory = False
+#   return default_collate_func(batch)
 
-setattr(dataloader, 'default_collate', default_collate_override)
+# setattr(dataloader, 'default_collate', default_collate_override)
 
-for t in torch._storage_classes:
-  if sys.version_info[0] == 2:
-    if t in ForkingPickler.dispatch:
-        del ForkingPickler.dispatch[t]
-  else:
-    if t in ForkingPickler._extra_reducers:
-        del ForkingPickler._extra_reducers[t]
+# for t in torch._storage_classes:
+#   if sys.version_info[0] == 2:
+#     if t in ForkingPickler.dispatch:
+#         del ForkingPickler.dispatch[t]
+#   else:
+#     if t in ForkingPickler._extra_reducers:
+#         del ForkingPickler._extra_reducers[t]
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str,
                     default='train_config_3d.yaml', help='training configuration')
+parser.add_argument('--c', action='store_true',required=False,
+                    help="[OPTIONAL] Continue training from latest checkpoint")
 
 
 if __name__ == "__main__":
@@ -87,12 +89,14 @@ if __name__ == "__main__":
         trainer = SemiSupervisedTrainer3D(config=config, 
                                           output_folder=snapshot_path,
                                           logging=logging)
-    else:
-        trainer = SemiSupervisedTrainer2D(config=config, 
-                                          output_folder=snapshot_path,
-                                          logging=logging,
-                                          root_path=config['root_path'])
+    # else:
+    #     trainer = SemiSupervisedTrainer2D(config=config, 
+    #                                       output_folder=snapshot_path,
+    #                                       logging=logging,
+    #                                       root_path=config['root_path'])
     trainer.initialize_network()
     trainer.initialize()
+    if args.c: # continue training
+        trainer.load_checkpoint()
     trainer.train()
 

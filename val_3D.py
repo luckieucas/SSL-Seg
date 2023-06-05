@@ -115,9 +115,11 @@ def process_fn(seg_prob_tuple, window_data, importance_map_):
         seg_prob = torch.softmax(seg_prob_tuple,dim=1)
         return seg_prob,importance_map_
 
-def test_single_case_monai(net, image, patch_size, overlap=0.5,):
+def test_single_case_monai(net, image, patch_size, overlap=0.5,do_SR=False):
     device = next(net.parameters()).device
     image = torch.from_numpy(image).unsqueeze(0).unsqueeze(0).to(device)
+    if do_SR:
+        image = F.interpolate(image, scale_factor=(0.75,0.7692,0.555), mode='trilinear')
     with torch.no_grad():
         prediction = sliding_window_inference(
                     image.float(),patch_size,2,net,overlap=overlap,

@@ -16,6 +16,7 @@ import random
 import wandb
 from tqdm import tqdm
 import numpy as np
+from batchgenerators.utilities.file_and_folder_operations import join
 
 from utils import losses,ramps,cac_loss
 from dataset.BCVData import BCVDataset, BCVDatasetCAC,DatasetSR
@@ -180,33 +181,19 @@ class SemiSupervisedTrainer3D:
                 net_type=self.backbone,in_chns=1, class_num=self.num_classes,
                 model_config=self.config['model'], device=self.device
             )
-            if self.continue_training:
-                model2_state_dict = torch.load(self.network2_checkpoint)
-                self.model2.load_state_dict(model2_state_dict)
-                print(f"====>sucessfully load model from{self.network2_checkpoint}")
-            else:
-                self._kaiming_normal_init_weight()
+            self._kaiming_normal_init_weight()
         elif self.method_name in ['C3PS','ConNet']:
             self.model2 = net_factory_3d(
                 self.backbone2, in_chns=1, class_num=2,device=self.device
             )
-            if self.continue_training:
-                model2_state_dict = torch.load(self.network2_checkpoint)
-                self.model2.load_state_dict(model2_state_dict)
-                print(f"====>sucessfully load model from{self.network2_checkpoint}")
-            else:
-                self._kaiming_normal_init_weight()
+            self._kaiming_normal_init_weight()
         elif self.method_name == 'CSSR':
             self.model2 = net_factory_3d(
                 self.backbone2, in_chns=1, class_num=self.num_classes,
-                device=self.device
+                device=self.device,
+                large_patch_size=self.method_config['patch_size_large']
             )
-            if self.continue_training:
-                model2_state_dict = torch.load(self.network2_checkpoint)
-                self.model2.load_state_dict(model2_state_dict)
-                print(f"====>sucessfully load model from{self.network2_checkpoint}")
-            else:
-                self._kaiming_normal_init_weight()
+            self._kaiming_normal_init_weight()
         elif self.method_name == 'URPC':
             print("URPC")
             self.model = net_factory_3d(
@@ -217,15 +204,29 @@ class SemiSupervisedTrainer3D:
                 net_type='McNet',in_chns=1, class_num=self.num_classes, 
                 device=self.device
             )
-        if self.continue_training:
-            model_state_dict = torch.load(self.network_checkpoint)
-            self.model.load_state_dict(model_state_dict)
-            self.current_iter = self.config['current_iter_num']
-            print(f"====>sucessfully load model from{self.network_checkpoint}")
-        else:
-            self._xavier_normal_init_weight()
-    def load_checkpoint(self, fname, train=True):
-        pass
+    
+    def load_checkpoint(self, fname="latest"):
+        checkpoint  = torch.load(join(self.output_folder,
+                                      "model1_"+fname+".pth"))
+        network_weights = checkpoint['network_weights']
+        self.model.load_state_dict(network_weights)
+        self.optimizer.load_state_dict(checkpoint['optimizer_state'])
+        if self.grad_scaler1 is not None:
+            self.grad_scaler1.load_state_dict(checkpoint['grad_scaler_state'])
+        self.current_iter = checkpoint['current_iter']
+        print(f"=====> Load checkpoint from {join(self.output_folder, 'model1_'+fname+'.pth')} for model1 Successfully")
+        
+        # load  checkpoint for model2 
+        if self.model2 is not None:
+            checkpoint2  = torch.load(join(self.output_folder,
+                                      "model2_"+fname+".pth"))
+            network_weights2 = checkpoint2['network_weights']
+            self.model2.load_state_dict(network_weights2)
+            self.optimizer2.load_state_dict(checkpoint2['optimizer_state'])
+            if self.grad_scaler2 is not None:
+                self.grad_scaler2.load_state_dict(checkpoint2['grad_scaler_state'])
+            print(f"=====> Load checkpoint from {join(self.output_folder, 'model2_'+fname+'.pth')} for model2 Successfully")
+        
 
     def load_dataset(self):
         train_supervised = False
@@ -470,16 +471,8 @@ class SemiSupervisedTrainer3D:
         print("avg metric shape:",avg_metric.shape)
         if avg_metric[:, 0].mean() > best_performance:
             best_performance = avg_metric[:, 0].mean()
-            save_mode_path = os.path.join(self.output_folder,
-                                          '{}_iter_{}_dice_{}.pth'.format(
-                                            model_name,
-                                            self.current_iter, 
-                                            round(best_performance, 4)))
-            save_best = os.path.join(self.output_folder,
-                                     '{}_best_{}.pth'.format(
-                                        self.backbone,model_name))
-            torch.save(model.state_dict(), save_mode_path)
-            torch.save(model.state_dict(), save_best)
+            save_name = f'iter_{self.current_iter}_dice_{round(best_performance,4)}'
+            self._save_checkpoint(save_name)
 
         self.tensorboard_writer.add_scalar(f'info/{model_name}_val_dice_score',
                         avg_metric[:, 0].mean(), self.current_iter)
@@ -2478,7 +2471,7 @@ class SemiSupervisedTrainer3D:
                     # filter the pseudo mask by max prob
                     filter1 = (
                         ((max_prob1>0.99)&(pseudo_outputs1==0))|
-                        ((max_prob1>0.9)&(pseudo_outputs1!=0))
+                        ((max_prob1>0.95)&(pseudo_outputs1!=0))
                     )
                     
 
@@ -2489,7 +2482,7 @@ class SemiSupervisedTrainer3D:
                     # filter the pseudo mask by max prob
                     filter2 = (
                         ((max_prob2>0.99)&(pseudo_outputs2==0))|
-                        ((max_prob2>0.9)&(pseudo_outputs2!=0))
+                        ((max_prob2>0.95)&(pseudo_outputs2!=0))
                     )
                     
                     if self.current_iter < self.began_semi_iter:
@@ -2561,22 +2554,12 @@ class SemiSupervisedTrainer3D:
                     self.current_iter % self.val_freq == 0
                 ) or self.current_iter==20:
                     self.evaluation(model=self.model)
-                    self.evaluation(model=self.model2,do_SR=True,model_name='model2')
+                    #self.evaluation(model=self.model2,do_SR=True,model_name='model2')
                     self.model.train()
                     self.model2.train()
             
                 if self.current_iter % self.save_checkpoint_freq == 0:
-                    save_mode_path = os.path.join(
-                    self.output_folder, 'model1_iter_' + \
-                        str(self.current_iter) + '.pth')
-                    torch.save(self.model.state_dict(), save_mode_path)
-                    self.logging.info("save model1 to {}".format(save_mode_path))
-
-                    save_mode_path = os.path.join(
-                        self.output_folder, 
-                        'model2_iter_' + str(self.current_iter) + '.pth')
-                    torch.save(self.model2.state_dict(), save_mode_path)
-                    self.logging.info("save model2 to {}".format(save_mode_path))
+                    self._save_checkpoint("latest")
                 if self.current_iter >= self.max_iterations:
                     break 
             if self.current_iter >= self.max_iterations:
@@ -2818,7 +2801,6 @@ class SemiSupervisedTrainer3D:
         self.tensorboard_writer.close()
         print("*"*10,"training done!","*"*10)
 
-
     
     def _get_current_consistency_weight(self, epoch):
         return self.consistency * ramps.sigmoid_rampup(epoch, 
@@ -2832,13 +2814,26 @@ class SemiSupervisedTrainer3D:
             ema_param.data.mul_(alpha).add_(1-alpha, param.data)
     
     def _worker_init_fn(self, worker_id):
-        random.seed(self.seed + worker_id)
-    
-    def _save_checkpoint(self):
-        save_checkpoint_path = os.path.join(
-            self.output_folder, 'iter_' + str(self.current_iter)+ '.pth')
-        torch.save(self.model.state_dict(), save_checkpoint_path)
-        self.logging.info(f'save model to {save_checkpoint_path}')
+        random.seed(self.seed + worker_id)     
+        
+    def _save_checkpoint(self, filename: str) -> None:
+        checkpoint1 = {
+                    'network_weights': self.model.state_dict(),
+                    'optimizer_state': self.optimizer.state_dict(),
+                    'grad_scaler_state': self.grad_scaler1.state_dict() if self.grad_scaler1 is not None else None,
+                    'current_iter': self.current_iter + 1,
+                    'wandb_id': self.wandb_logger.id
+        }
+        checkpoint2 = {
+                    'network_weights': self.model2.state_dict(),
+                    'optimizer_state': self.optimizer2.state_dict(),
+                    'grad_scaler_state': self.grad_scaler2.state_dict() if self.grad_scaler2 is not None else None,
+                    'current_iter': self.current_iter + 1,
+                    'wandb_id': self.wandb_logger.id
+        }
+        torch.save(checkpoint1, join(self.output_folder, "model1_" + filename + ".pth"))
+        torch.save(checkpoint2, join(self.output_folder, "model2_" + filename + ".pth"))
+        self.logging.info(f'save model to {join(self.output_folder, filename)}')
     
     
     def _get_label_batch_for_conditional_net(self, label_batch, condition_batch):
@@ -2859,10 +2854,6 @@ class SemiSupervisedTrainer3D:
                     label_batch_con[i][label_batch[i]==con] = 1
             return label_batch_con
                     
-    def _load_checkpoint(self):
-        pass
-    
-
     def _kaiming_normal_init_weight(self):
         for m in self.model2.modules():
             if isinstance(m, nn.Conv3d):

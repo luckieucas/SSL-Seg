@@ -28,7 +28,8 @@ from monai.networks.nets import UNet
 from networks.PlaninUNet_sr import PlainConvUNetSR
 
 def net_factory_3d(net_type="unet_3D", in_chns=1, class_num=2, 
-                   model_config=None, device=None, condition_noise=False):
+                   model_config=None, device=None, condition_noise=False,
+                   large_patch_size=(108,208,288)):
     if net_type == "unet_3D":
         model_config['out_channels'] = class_num
         net = get_model(model_config)
@@ -95,7 +96,8 @@ def net_factory_3d(net_type="unet_3D", in_chns=1, class_num=2,
         ).to(device)
     elif net_type == 'unet_3D_sr':
         net = unet_3D_sr(feature_scale=4, n_classes=class_num, is_deconv=True, 
-                          in_channels=1, is_batchnorm=True).to(device)
+                          in_channels=1, is_batchnorm=True,
+                          large_patch_size=large_patch_size).to(device)
     elif net_type == 'PlainConvUNetSR':
         conv_or_blocks_per_stage = {'n_conv_per_stage': [2,2,2,2,2],
                                         'n_conv_per_stage_decoder': [2,2,2,2]}

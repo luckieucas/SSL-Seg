@@ -18,9 +18,6 @@ import numpy as np
 import argparse
 from scipy.ndimage import zoom
 
-from dataset.BCVData import BCVDataset, BCVDatasetCAC,DatasetSR
-from dataset.dataset import DatasetSemi
-from dataset.sampler import BatchSampler, ClassRandomSampler
 from dataset.dataset import TwoStreamBatchSampler
 from dataset.dataset_old import (BaseDataSets, RandomGenerator,
                                  TwoStreamBatchSampler)

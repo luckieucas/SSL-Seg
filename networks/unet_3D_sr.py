@@ -20,7 +20,9 @@ from networks.utils import UnetConv3, UnetUp3, UnetUp3_CT
 
 class unet_3D_sr(nn.Module):
 
-    def __init__(self, feature_scale=4, n_classes=21, is_deconv=True, in_channels=3, is_batchnorm=True):
+    def __init__(self, feature_scale=4, n_classes=21, is_deconv=True, 
+                 in_channels=3, is_batchnorm=True, 
+                 large_patch_size=(108,208,288)):
         super(unet_3D_sr, self).__init__()
         self.is_deconv = is_deconv
         self.in_channels = in_channels
@@ -57,7 +59,7 @@ class unet_3D_sr(nn.Module):
         self.up_concat1 = UnetUp3_CT(filters[1], filters[0], is_batchnorm)
 
         # final conv (without any concat)
-        self.up_sample = nn.Upsample(scale_factor=(1.334, 1.3, 1.8), mode='trilinear')
+        self.up_sample = nn.Upsample(size=large_patch_size, mode='trilinear')
         self.final = nn.Conv3d(filters[0], n_classes, 1)
 
         self.dropout1 = nn.Dropout(p=0.3)
