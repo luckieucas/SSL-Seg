@@ -455,11 +455,11 @@ class SemiSupervisedTrainer3D:
         if self.current_iter % 1000==0 or (self.method_name=='ConNet' and self.current_iter % 400==0):
             test_num = self.testing_data_num
 
-        avg_metric = test_all_case(model,
-                                       test_list=self.test_list,
+        avg_metric = test_all_case(model,test_list=self.test_list,
                                        num_classes=self.num_classes,
                                        patch_size=self.method_config['patch_size_large'] if do_SR else self.patch_size,
                                        stride_xy=64, stride_z=64,
+                                       overlap=0.2,
                                        cut_upper=self.cut_upper,
                                        cut_lower=self.cut_lower,
                                        do_condition=do_condition,
@@ -499,71 +499,6 @@ class SemiSupervisedTrainer3D:
 
         return avg_metric
 
-    def _train_baseline_new(self):
-        print("================> Training Baseline New<===============")
-        optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01,
-                        momentum=0.9, weight_decay=0.0001)
-        iterator = tqdm(range(self.max_epoch), ncols=70)
-        for epoch_num in iterator:
-            dice_loss_list = []
-            ce_loss_list = []
-            for i_batch, sampled_batch in enumerate(self.dataloader):
-                self.model.train()
-                img, mask = (sampled_batch['image'], 
-                                sampled_batch['label'].long())
-                img = img.to(self.device)
-                mask = mask.to(self.device)
-                output = self.model(img)
-                dice_loss = self.dice_loss2(output, mask)
-            
-                #ce_loss = CE_loss(output, mask)
-                mask_argmax = torch.argmax(mask, dim=1)
-                ce_loss = self.ce_loss(output, mask_argmax)
-                loss =  dice_loss  + ce_loss
-                dice_loss_list.append(dice_loss.item())
-                ce_loss_list.append(ce_loss.item())
-                #ce_loss_list.append(ce_loss.item())
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                self.current_iter +=1
-                lr_ = 0.01 * (1.0 - self.current_iter / 30000) ** 0.9
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = lr_
-                print("iter:{}, lr:{}, dice loss:{}, ce loss:{}".format(
-                    self.current_iter, lr_, dice_loss.item(),ce_loss.item())
-                )
-                if ((self.current_iter>1000 and self.current_iter % 200 == 0) or 
-                    (self.current_iter<1000 and self.current_iter % 400 == 0)
-                ):
-                    self.model.eval()
-                    avg_metric = test_all_case(
-                        self.model,
-                        test_list=self.test_list,
-                        num_classes=self.num_classes,
-                        patch_size=self.patch_size,
-                        stride_xy=64,
-                        stride_z=64,
-                        cut_lower=self.cut_lower,
-                        cut_upper=self.cut_upper
-                    )
-                    if avg_metric[:, 0].mean() > self.best_performance:
-                        self.best_performance = avg_metric[:, 0].mean()
-                        save_model_path = os.path.join(
-                            self.output_folder,'model_iter_{}_dice_{}.pth'.format(
-                                self.current_iter, round(self.best_performance, 4)
-                            )
-                        )
-                        torch.save(self.model.state_dict(), save_model_path)
-                    print(
-                        f"iter:{self.current_iter},dice:{avg_metric[:, 0].mean()}"
-                    )
-                    self.wandb_logger.log(
-                        {"iter:":self.current_iter,"dice": avg_metric[:, 0].mean()}
-                    )
-                    self.logging.info(f"iter:{self.current_iter},dice:{avg_metric[:, 0].mean()}")
-
-
 
     def _train_baseline(self):
         print("================> Training Baseline <===============")
@@ -575,18 +510,21 @@ class SemiSupervisedTrainer3D:
                                              sampled_batch['label'].long())
                 volume_batch, label_batch = (volume_batch.to(self.device), 
                                              label_batch.to(self.device))
-
-                outputs = self.model(volume_batch)
-                outputs_soft = torch.softmax(outputs, dim=1)
-
-                label_batch = torch.argmax(label_batch, dim=1)
-                self.loss_ce = self.ce_loss(outputs, label_batch.long())
-                self.loss_dice = self.dice_loss(outputs_soft, 
-                                                label_batch.unsqueeze(1))
-                self.loss = 0.5 * (self.loss_dice + self.loss_ce)
                 self.optimizer.zero_grad()
-                self.loss.backward()
-                self.optimizer.step()
+                with autocast():
+                    outputs = self.model(volume_batch)
+                    outputs_soft = torch.softmax(outputs, dim=1)
+
+                    label_batch = torch.argmax(label_batch, dim=1)
+                    self.loss_ce = self.ce_loss(outputs, label_batch.long())
+                    self.loss_dice = self.dice_loss(outputs_soft, 
+                                                    label_batch.unsqueeze(1))
+                    self.loss = 0.5 * (self.loss_dice + self.loss_ce)
+                self.grad_scaler1.scale(self.loss).backward()
+                self.grad_scaler1.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 12)
+                self.grad_scaler1.step(self.optimizer)
+                self.grad_scaler1.update()
 
                 self._adjust_learning_rate()
                 self.current_iter += 1
@@ -617,7 +555,7 @@ class SemiSupervisedTrainer3D:
                     self.evaluation(model=self.model)
 
                 if self.current_iter % self.save_checkpoint_freq == 0:
-                    self._save_checkpoint()
+                    self._save_checkpoint(filename="latest")
 
                 if self.current_iter >= self.max_iterations:
                     break
@@ -2824,15 +2762,16 @@ class SemiSupervisedTrainer3D:
                     'current_iter': self.current_iter + 1,
                     'wandb_id': self.wandb_logger.id
         }
-        checkpoint2 = {
-                    'network_weights': self.model2.state_dict(),
-                    'optimizer_state': self.optimizer2.state_dict(),
-                    'grad_scaler_state': self.grad_scaler2.state_dict() if self.grad_scaler2 is not None else None,
-                    'current_iter': self.current_iter + 1,
-                    'wandb_id': self.wandb_logger.id
-        }
         torch.save(checkpoint1, join(self.output_folder, "model1_" + filename + ".pth"))
-        torch.save(checkpoint2, join(self.output_folder, "model2_" + filename + ".pth"))
+        if self.model2 is not None:
+            checkpoint2 = {
+                        'network_weights': self.model2.state_dict(),
+                        'optimizer_state': self.optimizer2.state_dict(),
+                        'grad_scaler_state': self.grad_scaler2.state_dict() if self.grad_scaler2 is not None else None,
+                        'current_iter': self.current_iter + 1,
+                        'wandb_id': self.wandb_logger.id
+            }
+            torch.save(checkpoint2, join(self.output_folder, "model2_" + filename + ".pth"))
         self.logging.info(f'save model to {join(self.output_folder, filename)}')
     
     

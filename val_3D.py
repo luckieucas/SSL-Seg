@@ -144,7 +144,8 @@ def calculate_metric(gt, pred, cal_hd95=False, cal_asd=False):
         return np.array([0.0,150,150])
 
 def test_all_case(net, test_list="full_test.list", num_classes=4, 
-                        patch_size=(48, 160, 160), stride_xy=32, stride_z=24, 
+                        patch_size=(48, 160, 160), 
+                        stride_xy=32, stride_z=24, overlap=0.5,
                         do_condition=False, do_SR=False,method="regular",
                         cal_metric=True,
                         save_prediction=False,
@@ -234,7 +235,8 @@ def test_all_case(net, test_list="full_test.list", num_classes=4,
             #     num_classes=num_classes, condition=-1, do_SR=do_SR,
             #     method=method)
             prediction = test_single_case_monai(net=net, image=image, 
-                                                patch_size=patch_size)
+                                                patch_size=patch_size,
+                                                overlap=overlap)
             if cal_metric:
                 for i in range(1, num_classes):
                     total_metric[i-1, :] += calculate_metric(
