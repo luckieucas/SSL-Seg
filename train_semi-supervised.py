@@ -88,7 +88,9 @@ if __name__ == "__main__":
     if config['train_3D']:
         trainer = SemiSupervisedTrainer3D(config=config, 
                                           output_folder=snapshot_path,
-                                          logging=logging)
+                                          logging=logging,
+                                          continue_training=args.c
+                                          )
     # else:
     #     trainer = SemiSupervisedTrainer2D(config=config, 
     #                                       output_folder=snapshot_path,

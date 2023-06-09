@@ -579,8 +579,13 @@ class DatasetSR(dataset):
             bbox_z_lb2 = (bbox_z_lb2-bbox_z_lb1) // self.stride * self.stride + bbox_z_lb1
             if bbox_x_lb2 < 0: bbox_x_lb2 += self.stride
             if bbox_y_lb2 < 0: bbox_y_lb2 += self.stride
-            if bbox_z_lb2 < 0: bbox_z_lb2 += self.stride 
-            if self.patch_size_large[0] - abs(bbox_x_lb2-bbox_x_lb1) < 0 or self.patch_size_large[1] - abs(bbox_y_lb2-bbox_y_lb1) < 0 or self.patch_size_large[2] - abs(bbox_z_lb2-bbox_z_lb1) < 0:
+            if bbox_z_lb2 < 0: bbox_z_lb2 += self.stride
+            gap_x = bbox_x_lb2-bbox_x_lb1
+            gap_y = bbox_y_lb2-bbox_y_lb1
+            gap_z = bbox_z_lb2-bbox_z_lb1
+            if ((gap_x + self.patch_size_small[0] <0) or (gap_x - self.patch_size_large[0] > 0)
+                or (gap_y + self.patch_size_small[1] <0) or (gap_y - self.patch_size_large[1] > 0)
+                or (gap_z + self.patch_size_small[2] <0) or (gap_z - self.patch_size_large[2] > 0)):
                 k += 1
                 continue
             
@@ -612,7 +617,8 @@ class DatasetSR(dataset):
                        min(self.patch_size_small[1], self.patch_size_large[1]+bbox_y_lb1-bbox_y_lb2, shape[1]//self.stride * self.stride),
                        min(self.patch_size_small[2], self.patch_size_large[2]+bbox_z_lb1-bbox_z_lb2, shape[2]//self.stride * self.stride)]
         
-        
+        if overlap1_br[1] < overlap1_ul[1]:
+            print("error")
         try:
             assert (overlap1_br[0]-overlap1_ul[0]) * (overlap1_br[1]-overlap1_ul[1]) * (overlap1_br[2]-overlap1_ul[2]) == (overlap2_br[0]-overlap2_ul[0]) * (overlap2_br[1]-overlap2_ul[1]) * (overlap2_br[2]-overlap2_ul[2])
         except:

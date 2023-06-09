@@ -281,7 +281,11 @@ if __name__ == '__main__':
     model = net_factory_3d(net_type=config['backbone'],in_chns=1, 
                                 class_num=dataset_config['num_classes'],
                                 model_config=config['model'])
-    model.load_state_dict(torch.load(model_path, map_location="cuda:0"))  
+    checkpoint = torch.load(model_path, map_location='cuda:0')
+    if "network_weights" in checkpoint.keys():
+        model.load_state_dict(checkpoint["network_weights"])
+    else:
+        model.load_state_dict(checkpoint) 
     test_list = dataset_config['test_list']
     #test_list = '/data/liupeng/semi-supervised_segmentation/3D_U-net_baseline/datasets/test_full.txt'
     patch_size = config['DATASET']['patch_size']
@@ -290,6 +294,7 @@ if __name__ == '__main__':
     avg_metric = test_all_case(model,test_list=test_list,
                         num_classes=dataset_config['num_classes'], 
                         patch_size=patch_size,
+                        batch_size=4,
                         stride_xy=64, 
                         stride_z=64,
                         cut_upper=cut_upper,

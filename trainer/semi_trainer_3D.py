@@ -31,7 +31,8 @@ from unet3d.losses import DiceLoss #test loss
 
 
 class SemiSupervisedTrainer3D:
-    def __init__(self, config, output_folder, logging) -> None:
+    def __init__(self, config, output_folder, logging,
+                 continue_training: bool = False) -> None:
         self.config = config
         self.device = torch.device(f"cuda:{config['gpu']}")
         self.output_folder = output_folder
@@ -61,7 +62,7 @@ class SemiSupervisedTrainer3D:
 
         # config for training from checkpoint
         self.continue_wandb = config['continue_wandb']
-        self.continue_training = config['continue_training']
+        self.continue_training = continue_training
         self.wandb_id = config['wandb_id']
         self.network_checkpoint = config['model_checkpoint']
         self.network2_checkpoint = config['model2_checkpoint'] # for CPS based methods
@@ -148,17 +149,10 @@ class SemiSupervisedTrainer3D:
                                f"{self.optimizer_type}_{self.optimizer2_type}"\
                                f"_{self.exp}"
 
-        if self.continue_wandb:
-            self.wandb_logger = wandb.init(name=self.experiment_name,
-                                            project="semi-supervised-segmentation",
-                                            config = self.config,
-                                            id=self.wandb_id,
-                                            resume='must')
-        else:
-            self.wandb_logger = wandb.init( name=self.experiment_name,
-                                            project="semi-supervised-segmentation",
-                                            config = self.config)
-        
+        self.wandb_logger = wandb.init( name=self.experiment_name,
+                                        project="semi-supervised-segmentation",
+                                        config = self.config)
+    
         wandb.tensorboard.patch(root_logdir=self.output_folder + '/log')
         self.tensorboard_writer = SummaryWriter(self.output_folder + '/log')
         self.load_dataset()
@@ -214,6 +208,12 @@ class SemiSupervisedTrainer3D:
         if self.grad_scaler1 is not None:
             self.grad_scaler1.load_state_dict(checkpoint['grad_scaler_state'])
         self.current_iter = checkpoint['current_iter']
+        # self.wandb_logger = wandb.init(name=self.experiment_name,
+        #                                     project="semi-supervised-segmentation",
+        #                                     config = self.config,
+        #                                     id=checkpoint['wandb_id'],
+        #                                     resume='must')
+        # wandb.tensorboard.patch(root_logdir=self.output_folder + '/log')
         print(f"=====> Load checkpoint from {join(self.output_folder, 'model1_'+fname+'.pth')} for model1 Successfully")
         
         # load  checkpoint for model2 
@@ -458,6 +458,7 @@ class SemiSupervisedTrainer3D:
         avg_metric = test_all_case(model,test_list=self.test_list,
                                        num_classes=self.num_classes,
                                        patch_size=self.method_config['patch_size_large'] if do_SR else self.patch_size,
+                                       batch_size=2,
                                        stride_xy=64, stride_z=64,
                                        overlap=0.2,
                                        cut_upper=self.cut_upper,
