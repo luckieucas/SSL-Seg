@@ -44,7 +44,8 @@ class_id_name_dict = {
     'MMWHS':['MYO', 'LA', 'LV', 'RA', 'AA', 'PA', 'RV'],
     'BCV':['Spleen', 'Right Kidney', 'Left Kidney','Liver','Pancreas'],
     'LA':['LA'],
-    'FLARE':['Liver','Kidney','Spleen','Pancreas']
+    'FLARE':['Liver','Kidney','Spleen','Pancreas'],
+    'FLARE_FR':['Liver','Kidney','Spleen','Pancreas']
 }
 
 def test_single_case(net, image, stride_x,stride_y, stride_z, patch_size, 
@@ -278,7 +279,7 @@ if __name__ == '__main__':
     if os.path.exists(pred_save_path):
         shutil.rmtree(pred_save_path)
     os.makedirs(pred_save_path)
-    model = net_factory_3d(net_type=config['backbone'],in_chns=1, 
+    model = net_factory_3d(net_type=config['backbone2'],in_chns=1, 
                                 class_num=dataset_config['num_classes'],
                                 model_config=config['model'])
     checkpoint = torch.load(model_path, map_location='cuda:0')
@@ -288,7 +289,7 @@ if __name__ == '__main__':
         model.load_state_dict(checkpoint) 
     test_list = dataset_config['test_list']
     #test_list = '/data/liupeng/semi-supervised_segmentation/3D_U-net_baseline/datasets/test_full.txt'
-    patch_size = config['DATASET']['patch_size']
+    patch_size = (108,208,288)#config['DATASET']['patch_size']
     model = model.cuda()
     model.eval()
     avg_metric = test_all_case(model,test_list=test_list,
@@ -302,6 +303,7 @@ if __name__ == '__main__':
                         save_prediction=True,
                         prediction_save_path=pred_save_path,
                         method = method,
+                        do_SR= True if "model2" in model_path else False,
                         test_all_cases=True
                     )
     print(avg_metric)

@@ -21,6 +21,7 @@ from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
 def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=1, 
                      condition=-1, do_SR=False, method='regular', return_scoremap=False):
     w, h, d = image.shape
+    print("do SR: ", do_SR)
 
     # if the size of image is less than patch_size, then padding it
     device = next(net.parameters()).device
@@ -120,7 +121,7 @@ def test_single_case_monai(net, image, patch_size, overlap=0.5,batch_size=2,
     device = next(net.parameters()).device
     image = torch.from_numpy(image).unsqueeze(0).unsqueeze(0).to(device)
     if do_SR:
-        image = F.interpolate(image, scale_factor=(0.75,0.7692,0.555), mode='trilinear')
+        image = F.interpolate(image, size=patch_size, mode='trilinear')
     with torch.no_grad():
         prediction = sliding_window_inference(
                     image.float(),patch_size,batch_size,net,overlap=overlap,
@@ -234,14 +235,16 @@ def test_all_case(net, test_list="full_test.list", num_classes=4,
                     print(f"condition:{condition}, metric:{metric}")
                     total_metric[condition-1, :] += metric
         else:
-            # prediction = test_single_case(
-            #     net, image, stride_xy, stride_z, patch_size, 
-            #     num_classes=num_classes, condition=-1, do_SR=do_SR,
-            #     method=method)
-            prediction = test_single_case_monai(net=net, image=image, 
-                                                patch_size=patch_size,
-                                                batch_size=batch_size,
-                                                overlap=overlap)
+            if do_SR:
+                prediction = test_single_case(
+                    net, image, stride_xy, stride_z, patch_size, 
+                    num_classes=num_classes, condition=-1, do_SR=do_SR,
+                    method=method)
+            else:
+                prediction = test_single_case_monai(net=net, image=image, 
+                                                    patch_size=patch_size,
+                                                    batch_size=batch_size,
+                                                    overlap=overlap)
             if cal_metric:
                 for i in range(1, num_classes):
                     total_metric[i-1, :] += calculate_metric(
