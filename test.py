@@ -264,6 +264,7 @@ if __name__ == '__main__':
     print(f"===========> using config file: {os.path.split(config_file)[1]}")
     config = yaml.safe_load(open(config_file, 'r'))
     method_name = config['method']
+    method_config = config['METHOD'][method_name]
     method = 'regular'
     if method_name == 'URPC':
         config['backbone'] = 'URPC'
@@ -279,9 +280,9 @@ if __name__ == '__main__':
     if os.path.exists(pred_save_path):
         shutil.rmtree(pred_save_path)
     os.makedirs(pred_save_path)
-    model = net_factory_3d(net_type=config['backbone2'],in_chns=1, 
-                                class_num=dataset_config['num_classes'],
-                                model_config=config['model'])
+    model = net_factory_3d(net_type=config['backbone'] if 'model2' not in model_path else config['backbone2'],
+                           in_chns=1, class_num=dataset_config['num_classes'],
+                            model_config=config['model'])
     checkpoint = torch.load(model_path, map_location='cuda:0')
     if "network_weights" in checkpoint.keys():
         model.load_state_dict(checkpoint["network_weights"])
@@ -289,7 +290,9 @@ if __name__ == '__main__':
         model.load_state_dict(checkpoint) 
     test_list = dataset_config['test_list']
     #test_list = '/data/liupeng/semi-supervised_segmentation/3D_U-net_baseline/datasets/test_full.txt'
-    patch_size = (108,208,288)#config['DATASET']['patch_size']
+    
+    method_config = config['METHOD'][method_name]
+    patch_size = config['DATASET']['patch_size'] if "model2" not in model_path else method_config['patch_size_large']
     model = model.cuda()
     model.eval()
     avg_metric = test_all_case(model,test_list=test_list,
