@@ -257,7 +257,10 @@ if __name__ == '__main__':
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     model_path = args.model_path
 
-    root_path,_ = os.path.split(model_path)
+    root_path,model_name = os.path.split(model_path)
+    model_name_properties = model_name.split('_')
+    model_type = model_name_properties[0]
+    iteration, dice = model_name_properties[2],model_name_properties[4].replace(".pth","")
     config_file_list =  glob(root_path+"/*yaml")
     sorted(config_file_list)
     config_file = config_file_list[-1]
@@ -276,7 +279,8 @@ if __name__ == '__main__':
     cut_upper = dataset_config['cut_upper']
     cut_lower = dataset_config['cut_lower']
 
-    pred_save_path = "{}/Prediction_full_stridexy40_stridez24/".format(root_path)
+    pred_save_path = "{}/Prediction_{}_iter{}_dice{}/".format(root_path,
+                                                              model_type,iteration,dice)
     if os.path.exists(pred_save_path):
         shutil.rmtree(pred_save_path)
     os.makedirs(pred_save_path)
