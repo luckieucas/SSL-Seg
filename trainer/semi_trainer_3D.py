@@ -36,7 +36,6 @@ class SemiSupervisedTrainer3D:
         self.output_folder = output_folder
         self.logging = logging
         self.exp = config['exp']
-        self.FP16 = config['FP16']
         self.weight_decay = config['weight_decay']
         self.lr_scheduler_eps = config['lr_scheduler_eps']
         self.lr_scheduler_patience = config['lr_scheduler_patience']

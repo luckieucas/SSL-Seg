@@ -209,9 +209,6 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
                 method=method)
             if cal_metric:
                 for i in range(1, num_classes):
-                    dice = dice_metric(torch.from_numpy(prediction==i),
-                                   torch.from_numpy(label==i))
-                    print(dice)
                     total_metric[i-1, :] += calculate_metric((label == i).astype(np.int32),
                                                              (prediction == i).astype(np.int32))
         

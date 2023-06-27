@@ -33,36 +33,7 @@ def net_factory_3d(net_type="unet_3D", in_chns=1, class_num=2,
         model_config['out_channels'] = class_num
         net = get_model(model_config)
     elif net_type == 'unet_3D_old':
-        print('nnunet',"*"*10)
-        conv_or_blocks_per_stage = {'n_conv_per_stage': [2,2,2,2,2,2],
-                                        'n_conv_per_stage_decoder': [2,2,2,2,2]}
-        kwargs = { 'conv_bias': True,
-                    'norm_op': get_matching_instancenorm(nn.Conv3d),
-                    'norm_op_kwargs': {'eps': 1e-5, 'affine': True},
-                    'dropout_op': None, 'dropout_op_kwargs': None,
-                    'nonlin': nn.LeakyReLU, 'nonlin_kwargs': {'inplace': True}
-                }
-        net = PlainConvUNet(input_channels=in_chns,n_stages=6,
-                            features_per_stage=[min(32 * 2 ** i,
-                                320) for i in range(6)],
-                            conv_op=nn.Conv3d,
-                            num_classes=class_num,
-                            kernel_sizes=[[1, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3]],
-                            strides=[[1, 1, 1], [1, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2]],
-                            deep_supervision=False,
-                            **conv_or_blocks_per_stage,
-                            **kwargs 
-                            )
-        #net = unet_3D(n_classes=class_num, in_channels=in_chns)
-        # net = UNet(
-        #     spatial_dims=3,
-        #     in_channels=in_chns,
-        #     out_channels=class_num,
-        #     channels=(16, 32, 64, 128, 256),
-        #     strides=(2, 2, 2, 2),
-        #     num_res_units=2,
-        #     kernel_size=(3,3,3)
-        # )
+        net = unet_3D(n_classes=class_num, in_channels=in_chns)
         print(f"net:{net}")
     elif net_type == "unet_3D_condition":
         net = unet_3D_Condition(
@@ -101,27 +72,8 @@ def net_factory_3d(net_type="unet_3D", in_chns=1, class_num=2,
             in_channels=1, is_batchnorm=True
         ).to(device)
     elif net_type == 'unet_3D_sr':
-        # net = unet_3D_sr(feature_scale=4, n_classes=class_num, is_deconv=True, 
-        #                  in_channels=1, is_batchnorm=True).to(device)
-        conv_or_blocks_per_stage = {'n_conv_per_stage': [2,2,2,2,2,2],
-                                        'n_conv_per_stage_decoder': [2,2,2,2,2]}
-        kwargs = { 'conv_bias': True,
-                    'norm_op': get_matching_instancenorm(nn.Conv3d),
-                    'norm_op_kwargs': {'eps': 1e-5, 'affine': True},
-                    'dropout_op': None, 'dropout_op_kwargs': None,
-                    'nonlin': nn.LeakyReLU, 'nonlin_kwargs': {'inplace': True}
-                }
-        net = PlainConvUNetSR(input_channels=in_chns,n_stages=6,
-                            features_per_stage=[min(32 * 2 ** i,
-                                320) for i in range(6)],
-                            conv_op=nn.Conv3d,
-                            num_classes=class_num,
-                            kernel_sizes=[[1, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3]],
-                            strides=[[1, 1, 1], [1, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2]],
-                            deep_supervision=False,
-                            **conv_or_blocks_per_stage,
-                            **kwargs 
-                            )
+        net = unet_3D_sr(feature_scale=4, n_classes=class_num, is_deconv=True, 
+                         in_channels=1, is_batchnorm=True).to(device)
     elif net_type == 'resnet_3D_cvcl':
         net = generate_resnet3d(in_channels=1,
                                 model_depth=10,
