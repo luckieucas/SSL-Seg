@@ -198,7 +198,8 @@ class SemiSupervisedTrainer3D:
         elif self.method_name == 'CSSR':
             self.model2 = net_factory_3d(
                 self.backbone2, in_chns=1, class_num=self.num_classes,
-                device=self.device
+                device=self.device,
+                large_patch_size=self.method_config['patch_size_large']
             )
             if self.continue_training:
                 model2_state_dict = torch.load(self.network2_checkpoint)
