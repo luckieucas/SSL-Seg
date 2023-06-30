@@ -293,7 +293,8 @@ class SemiSupervisedTrainer3D:
                 random_rotflip=self.random_rotflip,
                 upper=self.cut_upper,
                 lower=self.cut_lower,
-                weights=self.weights
+                weights=self.weights,
+                without_context=True
             )
 
     def get_dataloader(self):

@@ -188,8 +188,6 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
         image = sitk.GetArrayFromImage(image_sitk)
         label = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
         task_name = 'full'
-        if len(img_name.split("_")) >1:
-            task_name = img_name.split("_")[0]
         task_id = task_name_id_dict[task_name]
         print("task_id:",task_id)
         image = sitk.GetArrayFromImage(sitk.ReadImage(image_path))
@@ -280,8 +278,8 @@ if __name__ == '__main__':
                                 class_num=dataset_config['num_classes'],
                                 model_config=config['model'])
     model.load_state_dict(torch.load(model_path, map_location="cuda:0"))  
-    #test_list = dataset_config['test_list']
-    test_list = '/data/liupeng/semi-supervised_segmentation/3D_U-net_baseline/datasets/test_full.txt'
+    test_list = dataset_config['test_list']
+    #test_list = '/data/liupeng/semi-supervised_segmentation/3D_U-net_baseline/datasets/test_full.txt'
     patch_size = config['DATASET']['patch_size']
     model = model.cuda()
     model.eval()

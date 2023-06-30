@@ -491,7 +491,8 @@ class DatasetSR(dataset):
                  cutout=False, rotate_trans=False, scale_trans=False,
                  random_rotflip=False,
                  num_class=2, edge_prob=0., upper=200, lower=-68, 
-                 stride=8, iou_bound=[0.25,0.95], con_list=None, 
+                 stride=8, iou_bound=[0.25,0.95], without_context=False,
+                 con_list=None, 
                  addi_con_list=None, weights=None):
         self.patch_size_large = patch_size_large
         self.patch_size_small = patch_size_small
@@ -506,6 +507,7 @@ class DatasetSR(dataset):
         self.stride = stride
         self.iou_bound = iou_bound
         self.labeled_num = labeled_num
+        self.without_context = without_context
         if con_list:
             self.con_list = con_list 
         else:
@@ -585,6 +587,8 @@ class DatasetSR(dataset):
         bbox_y_ub1 = bbox_y_lb1 + self.patch_size_large[1]
         bbox_z_ub1 = bbox_z_lb1 + self.patch_size_large[2]
         max_iters = 50
+        if self.without_context:
+            max_iters = 0
         k = 0
         while k < max_iters:
             bbox_x_lb2 = np.random.randint(lb_x, ub_x_small + 1)
@@ -613,10 +617,13 @@ class DatasetSR(dataset):
                 break
             k+=1
         if k == max_iters:
-            print(f"k:{k}")
-            bbox_x_lb2  = bbox_x_lb1
-            bbox_y_lb2  = bbox_y_lb1
-            bbox_z_lb2  = bbox_z_lb1
+            # bbox_x_lb2  = bbox_x_lb1
+            # bbox_y_lb2  = bbox_y_lb1
+            # bbox_z_lb2  = bbox_z_lb1
+            bbox_x_lb2 = np.random.randint(bbox_x_lb1, bbox_x_lb1+self.patch_size_large[0]-self.patch_size_small[0])
+            bbox_y_lb2 = np.random.randint(bbox_y_lb1, bbox_y_lb1+self.patch_size_large[1]-self.patch_size_small[1])
+            bbox_z_lb2 = np.random.randint(bbox_z_lb1, bbox_z_lb1+self.patch_size_large[2]-self.patch_size_small[2])
+            
         
         overlap1_ul = [max(0, bbox_x_lb2-bbox_x_lb1), max(0, bbox_y_lb2-bbox_y_lb1),max(0,bbox_z_lb2-bbox_z_lb1) ]
         overlap1_br = [min(self.patch_size_large[0], self.patch_size_small[0]+bbox_x_lb2-bbox_x_lb1, shape[0]//self.stride * self.stride), 
