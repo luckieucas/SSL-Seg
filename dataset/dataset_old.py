@@ -46,6 +46,7 @@ class BaseDataSets(Dataset):
             h5f = h5py.File(self._base_dir + "/data/{}.h5".format(case), 'r')
         image = h5f['image'][:]
         label = h5f['label'][:]
+        print(f"case:{case},2D image shape:{image.shape}")
         sample = {'image': image, 'label': label}
         if self.split == "train":
             sample = self.transform(sample)

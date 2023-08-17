@@ -20,6 +20,7 @@ from typing import OrderedDict
 import yaml
 import argparse
 from glob import glob
+import torch.nn.functional as F
 
 from networks.net_factory_3d import net_factory_3d
 from batchgenerators.utilities.file_and_folder_operations import save_json
@@ -46,9 +47,9 @@ class_id_name_dict = {
 }
 
 def test_single_case(net, image, stride_x,stride_y, stride_z, patch_size, 
-                     num_classes=1, condition=-1, method='regular'):
+                     num_classes=1, condition=-1, do_SR=False):
     w, h, d = image.shape
-
+    device = next(net.parameters()).device
     # if the size of image is less than patch_size, then padding it
     add_pad = False
     if w < patch_size[0]:
@@ -87,11 +88,17 @@ def test_single_case(net, image, stride_x,stride_y, stride_z, patch_size,
             ys = min(stride_y * y, hh-patch_size[1])
             for z in range(0, sz):
                 zs = min(stride_z * z, dd-patch_size[2])
+                if xs==32 and ys==48 and zs ==128:
+                    break
+                print(f"xs: {xs}, ys: {ys}, zs: {zs}")
                 test_patch = image[xs:xs+patch_size[0],
                                    ys:ys+patch_size[1], zs:zs+patch_size[2]]
                 test_patch = np.expand_dims(np.expand_dims(
                     test_patch, axis=0), axis=0).astype(np.float32)
-                test_patch = torch.from_numpy(test_patch).cuda()
+                if do_SR:
+                    test_patch = F.interpolate(torch.as_tensor(test_patch), size=(96,160,160), mode='trilinear').to(device)
+                else:
+                    test_patch = torch.from_numpy(test_patch).to(device)
         
                 with torch.no_grad():
                     if condition>0:
@@ -134,7 +141,6 @@ def test_single_case(net, image, stride_x,stride_y, stride_z, patch_size,
 
 
 def cal_metric(gt, pred, cal_hd95=False, cal_asd=False, spacing=None):
-    print("spacing: ",spacing,"pred shape:", pred.shape)
     if pred.sum() > 0 and gt.sum() > 0:
         dice = metric.binary.dc(pred, gt)
         if cal_hd95:
@@ -142,7 +148,7 @@ def cal_metric(gt, pred, cal_hd95=False, cal_asd=False, spacing=None):
         else:
             hd95 = 0.0
         if cal_asd:
-            asd = metric.binary.asd(pred, gt, voxelspacing=spacing)
+            asd = metric.binary.asd(pred, gt)
         else:
             asd = 0.0
         return np.array([dice, hd95, asd])
@@ -157,7 +163,7 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
                       condition=-1,method="regular",cal_hd95=False,
                       cal_asd=False,cut_lower=-68, cut_upper=200, 
                       save_prediction=False,prediction_save_path='./',
-                      class_name_list=[]):
+                      class_name_list=[],do_SR=False):
     with open(test_list, 'r') as f:
         image_list = [img.replace('\n','') for img in f.readlines()]
     total_metric = np.zeros((num_classes-1, 3))
@@ -168,6 +174,12 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
     condition_list = [i for i in range(1,num_classes)]
     shuffle(condition_list)
     img_num = np.zeros((num_classes-1,1))
+    large_patch_img = ["../data/BCV/overlap_patches/img0039_crop_96_160_160_1.nii.gz"]
+    small_patch_img = ["../data/BCV/overlap_patches/img0039_crop_96_160_160_2.nii.gz"]
+    if do_SR:
+        image_list = large_patch_img
+    else:
+        image_list = small_patch_img
     for i, image_path in enumerate(tqdm(image_list)):
         res_metric = OrderedDict()
         if len(image_path.strip().split()) > 1:
@@ -203,13 +215,14 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
         print(f"image shape:{image.shape}, mean:{image.mean()}, max:{image.max()}")
         prediction = test_single_case(
             net, image, stride_x,stride_y,stride_z,patch_size, 
-            num_classes=num_classes, condition=condition, method=method)
+            num_classes=num_classes, condition=condition, do_SR=do_SR)
         
         each_metric = np.zeros((num_classes-1, 3))
         for i in range(1, num_classes):
             metrics = cal_metric(
                 label==i, prediction==i, cal_hd95=cal_hd95,
-                cal_asd=cal_asd, spacing=(spacing[2],spacing[1],spacing[0]))
+                cal_asd=cal_asd, spacing=spacing
+            )
             print(f"class:{class_name_list[i-1]}, metric:{metrics}")
             res_metric[class_name_list[i-1]] = {
                 'Dice':metrics[0],'HD95':metrics[1],'ASD':metrics[2]
@@ -260,9 +273,6 @@ if __name__ == '__main__':
     config = yaml.safe_load(open(config_file, 'r'))
     method_name = config['method']
     method = 'regular'
-    if method_name == 'URPC':
-        config['backbone'] = 'URPC'
-        method = 'urpc'
 
     dataset_name = config['dataset_name']
     class_name_list = class_id_name_dict[dataset_name]
@@ -270,17 +280,26 @@ if __name__ == '__main__':
     cut_upper = dataset_config['cut_upper']
     cut_lower = dataset_config['cut_lower']
 
-    pred_save_path = "{}/Prediction_full_stridexy40_stridez24/".format(root_path)
+    pred_save_path = "{}/Prediction_full_stridexy40_stridez24_tsne/".format(root_path)
     if os.path.exists(pred_save_path):
         shutil.rmtree(pred_save_path)
     os.makedirs(pred_save_path)
-    model = net_factory_3d(net_type=config['backbone'],in_chns=1, 
+    do_SR = False
+    patch_size = config['DATASET']['patch_size']
+    if "model2" not in model_path:
+        model = net_factory_3d(net_type=config['backbone'],in_chns=1, 
                                 class_num=dataset_config['num_classes'],
                                 model_config=config['model'])
+    else:
+        model = net_factory_3d(net_type=config['backbone2'],in_chns=1, 
+                                class_num=dataset_config['num_classes'],
+                                model_config=config['model'])
+        do_SR = True
+        patch_size = config['METHOD']['CSSR']['patch_size_large']
+        print("======> testing model2 <========")
     model.load_state_dict(torch.load(model_path, map_location="cuda:0"))  
     test_list = dataset_config['test_list']
     #test_list = '/data/liupeng/semi-supervised_segmentation/3D_U-net_baseline/datasets/test_full.txt'
-    patch_size = config['DATASET']['patch_size']
     model = model.cuda()
     model.eval()
     avg_metric = test_all_case_BCV(
@@ -298,7 +317,8 @@ if __name__ == '__main__':
                         save_prediction=True,
                         prediction_save_path=pred_save_path,
                         class_name_list=class_name_list,
-                        method = method
+                        method = method,
+                        do_SR=do_SR
                     )
     print(avg_metric)
     print(avg_metric[:, 0].mean(),avg_metric[:,1].mean(), avg_metric[:,2].mean())

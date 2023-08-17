@@ -159,7 +159,6 @@ def test_all_case_BCV(net, test_list="full_test.list", num_classes=4,
     else:
         condition_list = [i for i in range(1,num_classes)]
     #shuffle(condition_list)
-    dice_metric = DiceMetric(include_background=False)
     shuffle(image_list)
     if not do_condition:
         test_num = len(image_list)

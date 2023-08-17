@@ -45,9 +45,9 @@ from val_2D import test_single_volume
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
-                    default='/data/liupeng/semi-supervised_segmentation/dataset/Task012_Heart', help='Name of Experiment')
+                    default='/data1/liupeng/semi-supervised_segmentation/dataset/Task11_BCV/Training', help='Name of Experiment')
 parser.add_argument('--exp', type=str,
-                    default='MMWHS/Cross_Teaching_Between_CNN_Transformer', help='experiment_name')
+                    default='BCV/Cross_Teaching_Between_CNN_Transformer', help='experiment_name')
 parser.add_argument('--model', type=str,
                     default='unet', help='model_name')
 parser.add_argument('--max_iterations', type=int,
@@ -93,7 +93,7 @@ parser.add_argument('--throughput', action='store_true',
 # label and unlabel
 parser.add_argument('--labeled_bs', type=int, default=8,
                     help='labeled_batch_size per gpu')
-parser.add_argument('--labeled_num', type=int, default=2,
+parser.add_argument('--labeled_num', type=int, default=4,
                     help='labeled data')
 # costs
 parser.add_argument('--ema_decay', type=float,  default=0.99, help='ema_decay')
@@ -176,7 +176,7 @@ def train(args, snapshot_path):
                 param.detach_()
         return model
 
-    model1 = create_model()
+    model1 = create_model().cuda()
     model2 = ViT_seg(config, img_size=args.patch_size,
                      num_classes=args.num_classes).cuda()
     model2.load_from(config)

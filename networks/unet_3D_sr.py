@@ -10,6 +10,7 @@ the use of batch normalization, dropout, and leaky relu here.
 The implementation is borrowed from: https://github.com/ozan-oktay/Attention-Gated-Networks
 """
 import math
+import numpy as np
 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -91,6 +92,10 @@ class unet_3D_sr(nn.Module):
         up4 = self.up_concat4(conv4, center)
         up3 = self.up_concat3(conv3, up4)
         up2 = self.up_concat2(conv2, up3)
+        print(f"sr up2 shape: {up2.shape}")
+        # save feature to npy for tsne
+        up2_np = up2.cpu().numpy()
+        np.save("../data/BCV/sr_feature.npy",up2_np)
         up1 = self.up_concat1(conv1, up2)
         up1 = self.dropout2(up1)
         up1 = self.up_sample(up1)
