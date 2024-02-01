@@ -9,8 +9,10 @@
 python train_semi-supervised.py --config train_config_3d.yaml
 ```
 2. Train the 2d model
+```
 python train_semi-supervised.py --config train_config_3d.yaml
-3. Test the model 
+```
+4. Test the model 
 ```
 python test.py --model_path /path/to/trained_model
 ```
