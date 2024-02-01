@@ -10,7 +10,7 @@ python train_semi-supervised.py --config train_config_3d.yaml
 ```
 2. Train the 2d model
 ```
-python train_semi-supervised.py --config train_config_3d.yaml
+python train_semi-supervised.py --config train_config_2d.yaml
 ```
 4. Test the model 
 ```
