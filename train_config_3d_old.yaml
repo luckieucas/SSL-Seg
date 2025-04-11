@@ -1,11 +1,11 @@
-exp: "test" # threshhold for model1 and model2 are 0.95
-method: C3PS # use which semi-supervised method [Baseline,MT,EM,C3PS,DAN,CPS,UAMT,ConNet,McNet,CVCL,CSSR,CVCL_partial]
+exp: "large_patch_size_128_256_256" # threshhold for model1 and model2 are 0.95
+method: CSSR # use which semi-supervised method [Baseline,MT,EM,C3PS,DAN,CPS,UAMT,ConNet,McNet,CVCL,CSSR,CVCL_partial]
 train_3D: True # whether to train 3D models
 backbone: unet_3D_old #[unet_3D_old, McNet,unet_3D_cl, unet ]# backbone model
-backbone2: unet_3D_condtion_decoder #[unet_3D_condtion_decoder] for C3PS, [unet_3D_sr] for CSSR # backbone for second network [unet_3D_condtion_decoder,unet_3D_condtion,Unet3DConditionBottom]
-dataset_name: BCV #[BCV, MMWHS, LA]
+backbone2: unet_3D_sr #unet_3D_condtion_decoder # backbone for second network [unet_3D_condtion_decoder,unet_3D_condtion,Unet3DConditionBottom]
+dataset_name: BCV
 gpu: '0'
-#root_path: ../../dataset/Task012_Heart
+root_path: /mmfs1/data/liupen/project/dataset/ssl_seg/Task12_Heart
 
 # continue training setting
 continue_wandb: False
@@ -148,9 +148,9 @@ DATASET:
     num_classes: 6
     class_name_list: ['Spleen', 'Right_Kidney', 'Left_Kidney','Liver','Pancreas','Foreground']
     weights: [1.0,1.0,1.0,1.0,1.0] #[0.2,0.2,0.2,0.1,0.3]
-    train_list: "/projects/weilab/liupeng/dataset/ssl_seg/Task11_BCV/train.txt"
-    train_list_pl: "/projects/weilab/liupeng/dataset/ssl_seg/Pancreas/pancreas_test.txt" # train list for partial labeled data
-    test_list: "/projects/weilab/liupeng/dataset/ssl_seg/Task11_BCV/train.txt"
+    train_list: "../data/BCV/train.txt"
+    train_list_pl: "../data/Pancreas/pancreas_test.txt" # train list for partial labeled data
+    test_list: "../data/BCV/test.txt"
     training_data_num: 24
     testing_data_num: 6 
     cut_upper: 275 #200
