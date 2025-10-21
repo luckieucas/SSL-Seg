@@ -6,6 +6,7 @@ from cv2 import threshold
 import yaml
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
@@ -18,7 +19,7 @@ from tqdm import tqdm
 import numpy as np
 from batchgenerators.utilities.file_and_folder_operations import join
 
-from utils import losses,ramps,cac_loss
+from utils import losses,ramps,cac_loss,feature_memory,correlation
 from dataset.BCVData import BCVDataset, BCVDatasetCAC,DatasetSR
 from dataset.dataset import DatasetSemi
 from dataset.sampler import BatchSampler, ClassRandomSampler
@@ -26,6 +27,9 @@ from networks.net_factory_3d import net_factory_3d
 from dataset.dataset import TwoStreamBatchSampler
 from val_3D import test_all_case
 from unet3d.losses import DiceLoss #test loss
+
+
+
 
 
 
@@ -428,6 +432,8 @@ class SemiSupervisedTrainer3D:
                 self._train_CVCL()      
             elif self.method_name == 'CSSR':
                 self._train_CSSR()
+            elif self.method_name == "CAML":
+                self._train_CAML()
             else:
                 print(f"no such method {self.method_name}"+"!"*10)
                 sys.exit(0)
@@ -985,7 +991,7 @@ class SemiSupervisedTrainer3D:
                 ) or self.current_iter == 20:
                     self.evaluation(model=self.model)
                 if self.current_iter % self.save_checkpoint_freq == 0:
-                    self._save_checkpoint()
+                    self._save_checkpoint("latest")
                 if self.current_iter >= self.max_iterations:
                     break
             if self.current_iter >= self.max_iterations:
@@ -1440,7 +1446,6 @@ class SemiSupervisedTrainer3D:
                 )
                 volume_batch, label_batch = (volume_batch.to(self.device), 
                                              label_batch.to(self.device))
-                
                 #prepare input for condition net
                 condition_batch = sampled_batch['condition']
                 condition_batch = torch.cat([
@@ -1984,7 +1989,168 @@ class SemiSupervisedTrainer3D:
                     )
                     break
         self.tensorboard_writer.close()
+    def _train_CAML(self):
+        "Correlation-Aware Mutual Learning"
+        print("================> Training CAML<===============")
+        iterator = tqdm(range(self.max_epoch), ncols=70)
+        consistency_criterion = losses.mse_loss
+        memory_num = 256
+        num_filtered = 12800
+        lambda_s = 0.5
+        memory_bank = feature_memory.MemoryBank(num_labeled_samples=self.labeled_num, num_cls=self.num_classes)
+        for epoch_num in iterator:
+            for i_batch, sampled_batch in enumerate(self.dataloader):
+                volume_batch, label_batch, idx = sampled_batch['image'], sampled_batch['label'], sampled_batch['idx']
+                volume_batch, label_batch, idx = volume_batch.cuda(), label_batch.cuda(), idx.cuda()
+                label_batch = torch.argmax(label_batch, dim=1)
+                self.model.train()
+                outputs_v, outputs_a, embedding_v, embedding_a = self.model(volume_batch)
+                outputs_list = [outputs_v, outputs_a]
+                num_outputs = len(outputs_list)
 
+                y_ori = torch.zeros((num_outputs,) + outputs_list[0].shape)
+                y_pseudo_label = torch.zeros((num_outputs,) + outputs_list[0].shape)
+
+                loss_s = 0
+                for i in range(num_outputs):
+                    y = outputs_list[i][:self.labeled_bs, ...]
+                    y_prob = F.softmax(y, dim=1)
+                    loss_s += self.dice_loss(y_prob[:, ...], label_batch[:self.labeled_bs].unsqueeze(1))
+
+                    y_all = outputs_list[i]
+                    y_prob_all = F.softmax(y_all, dim=1)
+                    y_ori[i] = y_prob_all
+                    y_pseudo_label[i] = self._sharpening(y_prob_all)
+
+                loss_c = 0
+                for i in range(num_outputs):
+                    for j in range(num_outputs):
+                        if i != j:
+                            loss_c += consistency_criterion(y_ori[i], y_pseudo_label[j])
+
+                outputs_v_soft = F.softmax(outputs_v, dim=1)  # [batch, num_class, h, w, d]
+                outputs_a_soft = F.softmax(outputs_a, dim=1)  # soft prediction of fa
+                labeled_features_v = embedding_v[:self.labeled_bs, ...]
+                labeled_features_a = embedding_a[:self.labeled_bs, ...]
+
+                # unlabeled embeddings to calculate correlation matrix with embeddings sampled from the memory bank
+                unlabeled_features_v = embedding_v[self.labeled_bs:, ...]
+                unlabeled_features_a = embedding_a[self.labeled_bs:, ...]
+
+                y_v = outputs_v_soft[:self.labeled_bs]
+                y_a = outputs_a_soft[:self.labeled_bs]
+                true_labels = label_batch[:self.labeled_bs]
+
+                _, prediction_label_v = torch.max(y_v, dim=1)
+                _, prediction_label_a = torch.max(y_a, dim=1)
+                predicted_unlabel_prob_v, predicted_unlabel_v = torch.max(outputs_v_soft[self.labeled_bs:],
+                                                                        dim=1)  # v_unlabeled_mask
+                predicted_unlabel_prob_a, predicted_unlabel_a = torch.max(outputs_a_soft[self.labeled_bs:],
+                                                                        dim=1)  # a_unlabeled_mask
+
+                # Select the correct predictions including the foreground class and the background class
+                mask_prediction_correctly = (
+                        ((prediction_label_a == true_labels).float() + (prediction_label_v == true_labels).float()) == 2)
+
+                labeled_features_v = labeled_features_v.permute(0, 2, 3, 4, 1).contiguous()
+                b, h, w, d, labeled_features_dim = labeled_features_v.shape
+
+                # get projected features
+                self.model.eval()
+                proj_labeled_features_v = self.model.projection_head1(labeled_features_v.view(-1, labeled_features_dim))
+                proj_labeled_features_v = proj_labeled_features_v.view(b, h, w, d, -1)
+
+                proj_labeled_features_a = self.model.projection_head2(labeled_features_a.view(-1, labeled_features_dim))
+                proj_labeled_features_a = proj_labeled_features_a.view(b, h, w, d, -1)
+                self.model.train()
+
+                labels_correct_list = []
+                labeled_features_correct_list = []
+                labeled_index_list = []
+                for i in range(self.labeled_bs):
+                    labels_correct_list.append(true_labels[i][mask_prediction_correctly[i]])
+                    labeled_features_correct_list.append((proj_labeled_features_v[i][mask_prediction_correctly[i]] +
+                                                        proj_labeled_features_a[i][mask_prediction_correctly[i]]) / 2)
+                    labeled_index_list.append(idx[i])
+
+                # updated memory bank
+                labeled_index = idx[:self.labeled_bs]
+                memory_bank.update_labeled_features(labeled_features_correct_list, labels_correct_list,
+                                                    labeled_index_list)
+
+                # sample memory bank size labeled features from memory bank
+                memory = memory_bank.sample_labeled_features(memory_num)
+
+                # get the mask with the same prediction between fv and fa on unlabeled data
+                mask_consist_unlabeled = predicted_unlabel_v == predicted_unlabel_a  # [b, h, w, d]
+                # use model V's predicted label and prob to filter unlabeled feature online
+                consist_unlabel = predicted_unlabel_v[mask_consist_unlabeled]  # [num_consist]
+                consist_unlabel_prob = predicted_unlabel_prob_v[mask_consist_unlabeled]  # [num_consist]
+
+                unlabeled_features_v = unlabeled_features_v.permute(0, 2, 3, 4, 1)
+                unlabeled_features_a = unlabeled_features_a.permute(0, 2, 3, 4, 1)
+                unlabeled_features_v = unlabeled_features_v[mask_consist_unlabeled, :]  # [num_consist, feat_dim]
+                unlabeled_features_a = unlabeled_features_a[mask_consist_unlabeled, :]
+
+                # get fv's correlation matrix
+                projected_feature_v = self.model.projection_head1(unlabeled_features_v)
+                predicted_feature_v = self.model.prediction_head1(projected_feature_v)
+                corr_v, corr_v_available = correlation.cal_correlation_matrix(predicted_feature_v,
+                                                                            consist_unlabel_prob,
+                                                                            consist_unlabel,
+                                                                            memory,
+                                                                            self.num_classes,
+                                                                            num_filtered=num_filtered)
+
+                # get fa's correlation matrix
+                projected_feature_a = self.model.projection_head2(unlabeled_features_a)
+                predicted_feature_a = self.model.prediction_head2(projected_feature_a)
+                corr_a, corr_a_available = correlation.cal_correlation_matrix(predicted_feature_a,
+                                                                            consist_unlabel_prob,
+                                                                            consist_unlabel,
+                                                                            memory,
+                                                                            self.num_classes,
+                                                                            num_filtered=num_filtered)
+
+                # calculate omni-correlation consistency loss
+                if corr_v_available and corr_a_available:
+                    num_samples = corr_a.shape[0]
+                    loss_o = torch.sum(torch.sum(-corr_a * torch.log(corr_v + 1e-8), dim=1)) / num_samples
+                else:
+                    loss_o = 0
+
+                lambda_c = self._get_lambda_c(self.current_iter // 150)
+                lambda_o = self._get_lambda_o(self.current_iter // 150)
+
+                loss = lambda_s * loss_s  #+ lambda_c * loss_c #+ lambda_o * loss_o
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                self._adjust_learning_rate()
+                self.current_iter += 1
+                self.logging.info('iteration %d : loss : %03f, loss_s: %03f, loss_c: %03f, loss_o: %03f' % (
+                    self.current_iter, loss, loss_s, loss_c, loss_o))
+
+                self.tensorboard_writer.add_scalar('Labeled_loss/loss_s', loss_s, self.current_iter)
+                self.tensorboard_writer.add_scalar('Co_loss/loss_c', loss_c, self.current_iter)
+                self.tensorboard_writer.add_scalar('Co_loss/loss_o', loss_o, self.current_iter)
+                if (
+                    self.current_iter > self.began_eval_iter and
+                    self.current_iter % self.val_freq == 0
+                ) or self.current_iter==20:
+                    self.evaluation(model=self.model)
+                    #self.evaluation(model=self.model2,do_SR=True,model_name='model2')
+                    self.model.train()
+            
+                if self.current_iter % self.save_checkpoint_freq == 0:
+                    self._save_checkpoint("latest")
+                if self.current_iter >= self.max_iterations:
+                    break 
+            if self.current_iter >= self.max_iterations:
+                iterator.close()
+                break
+        self.tensorboard_writer.close()
     def _train_CSSR(self):
         "cross supervision use high resolution"
         print("================> Training CSSR<===============")
@@ -2383,7 +2549,15 @@ class SemiSupervisedTrainer3D:
     def _get_current_consistency_weight(self, epoch):
         return self.consistency * ramps.sigmoid_rampup(epoch, 
                                                        self.consistency_rampup)
-    
+    def _get_lambda_c(self,epoch):
+    # Consistency ramp-up from https://arxiv.org/abs/1610.02242
+        return 1.0 * ramps.sigmoid_rampup(epoch, self.consistency_rampup)
+
+
+    def _get_lambda_o(self,epoch):
+        # Consistency ramp-up from https://arxiv.org/abs/1610.02242
+        return 0.05 * ramps.sigmoid_rampup(epoch, self.consistency_rampup)
+ 
     def _update_ema_variables(self):
         # use the true average until the exponential average is more correct
         alpha = min(1-1/(self.current_iter + 1), self.ema_decay)

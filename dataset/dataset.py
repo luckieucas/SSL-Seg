@@ -189,10 +189,10 @@ class DatasetSemi(dataset):
         if ".npy" not in img_name:
             if "heartMR" in img_name or self.normalization=='MinMax':
                 img_array = self.normalize_minmax_data(img_array)
-                np.clip(img_array, 0.0, 1.0, out=img_array) # norm to(0,1)
+                img_array = np.clip(img_array, 0.0, 1.0) # norm to(0,1)
                 print('min max norm')
             else:
-                np.clip(img_array,self.lower, self.upper, out=img_array)
+                img_array = np.clip(img_array,self.lower, self.upper)
                 img_array = (img_array - img_array.mean())/img_array.std()
         img_shape = img_array.shape
         
@@ -253,7 +253,8 @@ class DatasetSemi(dataset):
             img_array = img[0,:]
             mask_array = mask[0,:]
         sample = {'image': img_array, 
-                  'label': mask_array.long()}
+                  'label': mask_array.long(),
+                  'idx': index}
         return sample
 
     def __len__(self):

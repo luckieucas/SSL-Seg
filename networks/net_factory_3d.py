@@ -26,6 +26,7 @@ from networks.DenseNet3D import SinglePathDenseNet
 from networks.DenseVox3D import DenseVoxelNet
 from monai.networks.nets import UNet
 from networks.PlaninUNet_sr import PlainConvUNetSR
+from networks.CAML import CAML3d_v1
 
 def net_factory_3d(net_type="unet_3D", in_chns=1, class_num=2, 
                    model_config=None, device=None, condition_noise=False,
@@ -126,6 +127,8 @@ def net_factory_3d(net_type="unet_3D", in_chns=1, class_num=2,
     elif net_type == 'densenet_3D_cvcl':
         #net = SinglePathDenseNet(in_channels=1,classes=class_num).to(device)
         net = DenseVoxelNet(in_channels=1, classes=class_num).to(device)
+    elif net_type == "caml": 
+        net = CAML3d_v1(n_channels=1, n_classes=class_num, normalization='batchnorm', has_dropout=True).to(device)
     else:
         net = None
     return net

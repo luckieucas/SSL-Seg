@@ -155,7 +155,7 @@ class BCVDataset(dataset):
 
 
         sample = {'image': img_array, 'label': mask_array.long(), 
-                  'condition':condition.long()}
+                  'condition':condition.long(),'idx':index}
         #get image patch
 
         return sample
@@ -535,7 +535,8 @@ class DatasetSR(dataset):
         mask_array = pad_nd_image(mask_array,self.patch_size_large)
         # 将灰度值在阈值之外的截断掉
         if ".npy" not in img_name:
-            np.clip(img_array, self.lower, self.upper, out=img_array)
+            img_array = np.clip(img_array, self.lower, self.upper)
+            img_array = img_array.astype(np.float32)
             """Normalize the image"""
             img_array = (img_array - img_array.mean())/img_array.std()
         shape = img_array.shape

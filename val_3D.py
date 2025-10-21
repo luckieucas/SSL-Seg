@@ -126,7 +126,9 @@ def test_single_case_monai(net, image, patch_size, overlap=0.5,batch_size=2,
         prediction = sliding_window_inference(
                     image.float(),patch_size,batch_size,net,overlap=overlap,
                     mode='gaussian',process_fn=process_fn
-                ).cpu().numpy().squeeze()
+                )
+        if len(prediction) > 1: prediction = prediction[0].cpu().numpy().squeeze()
+        else: prediction = prediction.cpu().numpy().squeeze()
     label_map = np.argmax(prediction, axis=0)
     return label_map
 
@@ -217,9 +219,9 @@ def test_all_case(net, test_list="full_test.list", num_classes=4,
                 # min-max norm on total 3D volume
                 print('min max norm')
                 image=(image-min_val_1p)/(max_val_99p-min_val_1p)
-                np.clip(image, 0.0, 1.0, out=image)
+                image = np.clip(image, 0.0, 1.0)
             else:
-                np.clip(image,cut_lower,cut_upper,out=image)
+                image = np.clip(image,cut_lower,cut_upper)
                 image = (image - image.mean()) / image.std()
         if do_condition:
             print(f"===>test image:{image_path}")
